@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=DRAGGY ENCODER
+Exec=DraggyEncoder
+Icon=draggy-encoder
+Type=Application
+Categories=AudioVideo;Video;
+Comment=Professional video compressor with hardware acceleration
