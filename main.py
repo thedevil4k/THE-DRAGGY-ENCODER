@@ -7,7 +7,8 @@ import psutil
 import src.globals as g
 from notifypy import Notify
 from src.download import DownloadThread
-from src.thread import CompressionThread, get_video_metadata, human_readable_size, get_available_encoders, get_hardware_info
+from src.thread import CompressionThread, get_video_metadata, human_readable_size
+from src.loader import LoadingWindow
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -22,6 +23,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
 from src.styles import *
+
+window = None
 
 
 def load_settings():
@@ -53,14 +56,22 @@ def delete_bin():
 
 
 class Window(QWidget):
-    def __init__(self) -> None:
+    def __init__(self, hw_data=None) -> None:
         print("Window __init__ starting...")
         super().__init__()
         self.is_audio_only = False
-        print("Verifying directories...")
-        self.verify_directories()
         print("Loading settings...")
         self.settings = load_settings()
+        
+        # Use provided hardware data or fallback
+        if hw_data:
+            self.hw_info = hw_data.get("hw_info", {"cpu": "Unknown", "gpus": []})
+            self.all_encoders = hw_data.get("encoders", ["libx264"])
+        else:
+            from src.thread import get_hardware_info, get_available_encoders
+            self.hw_info = get_hardware_info()
+            self.all_encoders = get_available_encoders()
+
         print("Setting window properties...")
         self.setFixedSize(WINDOW.w, WINDOW.h)
         self.setWindowTitle(g.TITLE)
@@ -120,9 +131,6 @@ class Window(QWidget):
         self.combo_device.move(DEVICE_COMBOBOX.x, DEVICE_COMBOBOX.y)
         
         # Determine available devices
-        print("Detecting hardware info...")
-        self.hw_info = get_hardware_info()
-        print(f"Hardware info detected: {self.hw_info}")
         devices = ["CPU"]
         
         has_intel = any("Intel" in gpu for gpu in self.hw_info["gpus"])
@@ -152,9 +160,6 @@ class Window(QWidget):
         self.combo_codec.move(CODEC_COMBOBOX.x, CODEC_COMBOBOX.y)
         
         # Store all verified encoders and update list
-        print("Getting available encoders...")
-        self.all_encoders = get_available_encoders()
-        print(f"All encoders: {self.all_encoders}")
         self.update_codec_list()
         
         # Select saved codec/device if available
@@ -310,37 +315,6 @@ class Window(QWidget):
         self.update_log(g.READY_TEXT)
         self.update_progress(0)
 
-    def verify_directories(self):
-        print("Verifying directories...")
-        if getattr(sys, "frozen", False):
-            # Running as compiled executable
-            g.root_dir = os.path.dirname(sys.executable)
-        else:
-            # Running as script
-            g.root_dir = os.path.dirname(os.path.abspath(__file__))
-
-        print(f"Root: {g.root_dir}")
-        g.bin_dir = os.path.join(g.root_dir, "bin")
-
-        if not os.path.exists(g.bin_dir):
-            os.mkdir(g.bin_dir)
-
-        print(f"Bin: {g.bin_dir}")
-        g.output_dir = os.path.join(g.root_dir, "output")
-
-        if not os.path.exists(g.output_dir):
-            os.mkdir(g.output_dir)
-
-        print(f"Output: {g.output_dir}")
-        g.res_dir = os.path.join(g.root_dir, "res")
-        print(f"Res: {g.res_dir}")
-        
-        if platform.system() == "Windows":
-            g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg.exe")
-            g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe.exe")
-        else:
-            g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg")
-            g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe")
 
     def verify_ffmpeg(self):
         if os.path.exists(g.ffmpeg_path) and os.path.exists(g.ffprobe_path):
@@ -355,7 +329,7 @@ class Window(QWidget):
 
         # Show detected system and hardware
         os_info = f"{platform.system()} {platform.release()}"
-        hw = get_hardware_info()
+        hw = self.hw_info
         gpus_str = "\n".join([f"- {gpu}" for gpu in hw["gpus"]])
         msg = f"System: {os_info}\nCPU: {hw['cpu']}\nGPUs Detected:\n{gpus_str}\n\n{g.READY_TEXT}"
         self.update_log(msg)
@@ -571,8 +545,19 @@ class Window(QWidget):
                 subprocess.Popen(["xdg-open", g.output_dir])
 
 
+def start_main_window(hw_data):
+    global window
+    window = Window(hw_data)
+    window.show()
+
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    window = Window()
-    window.show()
+    
+    # Initialize directories and paths FIRST
+    g.verify_directories()
+    
+    loader = LoadingWindow()
+    loader.finished.connect(start_main_window)
+    loader.show()
+    
     sys.exit(app.exec())
