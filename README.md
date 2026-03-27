@@ -1,5 +1,8 @@
 # DRAGGY ENCODER v1
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+
 A professional video compressor with full hardware acceleration support.
 
 ![Preview](preview.png)
@@ -19,6 +22,11 @@ A professional video compressor with full hardware acceleration support.
 - 💾 **Settings persistence** — Remembers your preferences
 - 🐧 **Cross-platform** — Windows & Linux
 
+## Prerequisites
+
+- **FFmpeg**: The application requires FFmpeg. On first launch, it will attempt to download it automatically if not found.
+- **Hardware**: For hardware acceleration, ensure you have the latest drivers for your GPU (NVIDIA, Intel, or AMD).
+
 ## Download
 
 Go to the [Releases](../../releases) page and download:
@@ -28,7 +36,7 @@ Go to the [Releases](../../releases) page and download:
 | **Windows** | `DraggyEncoder_v1_Setup.exe` | Run the installer |
 | **Linux** | `DraggyEncoder-v1-x86_64.AppImage` | `chmod +x` and run |
 
-> **Note**: FFmpeg is downloaded automatically on first launch.
+> **Note**: FFmpeg is managed automatically by the application.
 
 ## Build from Source
 
@@ -39,8 +47,13 @@ Go to the [Releases](../../releases) page and download:
 ### Steps
 
 ```bash
-git clone https://github.com/thedevil4k/draggy-encoder.git
-cd draggy-encoder
+git clone https://github.com/thedevil4k/THE-DRAGGY-ENCODER.git
+cd THE-DRAGGY-ENCODER
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# Linux
+source .venv/bin/activate
 pip install -r requirements.txt
 python main.py
 ```
@@ -53,14 +66,6 @@ pyinstaller draggy_encoder.spec
 # Then use Inno Setup to compile installer.iss
 ```
 
-### Build AppImage (Linux)
-
-```bash
-pip install pyinstaller
-pyinstaller draggy_encoder.spec
-# Then use appimagetool to create the AppImage (see .github/workflows/build.yml)
-```
-
 ## Tech Stack
 
 - **Python 3.12** + **PySide6** (Qt)
@@ -69,6 +74,10 @@ pyinstaller draggy_encoder.spec
 - **Inno Setup** (Windows installer)
 - **AppImage** (Linux portable)
 
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
 ---
 
-Made with ❤️
+Made with ❤️ by [thedevil4k](https://github.com/thedevil4k)

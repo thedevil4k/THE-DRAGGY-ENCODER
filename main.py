@@ -4,6 +4,7 @@ import os
 import platform
 import subprocess
 import psutil
+from pathlib import Path
 import src.globals as g
 from notifypy import Notify
 from src.download import DownloadThread
@@ -19,25 +20,67 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QProgressBar,
     QComboBox,
+    QVBoxLayout,
+    QHBoxLayout,
+    QSpacerItem,
+    QSizePolicy,
 )
 from PySide6.QtGui import QIcon
 from PySide6.QtCore import Qt
-from src.styles import *
+from src.styles import (
+    WINDOW,
+    GLOBAL_STYLE,
+    SELECT_BUTTON,
+    OUTPUT_BUTTON,
+    COMPRESS_BUTTON,
+    ABORT_BUTTON,
+    FILE_SIZE_LABEL,
+    FILE_SIZE_ENTRY,
+    DEVICE_LABEL,
+    DEVICE_COMBOBOX,
+    CODEC_LABEL,
+    CODEC_COMBOBOX,
+    EXPORT_LABEL,
+    EXPORT_COMBOBOX,
+    AUDIO_LABEL,
+    AUDIO_COMBOBOX,
+    LOG_AREA,
+    INFO_PATH_LABEL,
+    LABEL_STYLE,
+    INFO_SIZE_LABEL,
+    INFO_QUALITY_LABEL,
+    ERROR_LABEL,
+    ERROR_LABEL_STYLE,
+    PROGRESS_BAR,
+    BUTTON_DISABLED_STYLE,
+    BUTTON_SELECT_STYLE,
+    LINEEDIT_STYLE,
+    COMBOBOX_STYLE,
+    LABEL_LOG_STYLE,
+    PROGRESS_BAR_STYLE,
+    BUTTON_COMPRESS_STYLE,
+    BUTTON_ABORT_STYLE
+)
 
 window = None
 
 
-def load_settings():
+def load_settings() -> dict:
+    settings_path = Path(g.res_dir) / "settings.json"
     try:
-        with open(os.path.join(g.res_dir, "settings.json"), "r") as f:
-            return json.load(f)
-    except:
-        return g.DEFAULT_SETTINGS
+        if settings_path.exists():
+            return json.loads(settings_path.read_text())
+    except Exception as e:
+        print(f"Error loading settings: {e}")
+    return g.DEFAULT_SETTINGS
 
 
 def save_settings(settings):
-    with open(os.path.join(g.res_dir, "settings.json"), "w") as f:
-        json.dump(settings, f)
+    settings_path = Path(g.res_dir) / "settings.json"
+    try:
+        settings_path.write_text(json.dumps(settings, indent=4))
+    except Exception as e:
+        print(f"Error saving settings: {e}")
 
 
 def kill_ffmpeg():
@@ -60,8 +103,10 @@ class Window(QWidget):
         print("Window __init__ starting...")
         super().__init__()
         self.is_audio_only = False
+        self.label_log = None
+        self.progress_bar = None
         print("Loading settings...")
-        self.settings = load_settings()
+        self.settings: dict = load_settings()
         
         # Use provided hardware data or fallback
         if hw_data:
@@ -73,96 +118,231 @@ class Window(QWidget):
             self.all_encoders = get_available_encoders()
 
         print("Setting window properties...")
-        self.setFixedSize(WINDOW.w, WINDOW.h)
+        # We can still keep a minimum/fixed size if desired, but layouts will manage the inside.
+        self.setMinimumSize(WINDOW.w, WINDOW.h)
         self.setWindowTitle(g.TITLE)
-        icon_path = os.path.join(g.res_dir, "icon.ico")
-        print(f"Setting window icon: {icon_path}")
-        self.setWindowIcon(QIcon(icon_path))
+        icon_path = Path(g.res_dir) / "icon.ico"
+        if icon_path.exists():
+            print(f"Setting window icon: {icon_path}")
+            self.setWindowIcon(QIcon(str(icon_path)))
+        
         self.setAcceptDrops(True)
         print("Setting styles...")
         self.setStyleSheet(GLOBAL_STYLE)
 
-        # Select Button
-        self.button_select = QPushButton("Select Videos", self)
-        self.button_select.resize(SELECT_BUTTON.w, SELECT_BUTTON.h)
-        self.button_select.move(SELECT_BUTTON.x, SELECT_BUTTON.y)
+        self.setup_ui()
+        self.verify_ffmpeg()
+
+    def setup_ui(self):
+        # Initialize log and progress first to avoid AttributeErrors if methods call them during setup
+        self.label_log = QLabel(g.READY_TEXT)
+        self.progress_bar = QProgressBar()
+
+        # Main Layout
+        self.main_layout = QVBoxLayout(self)
+        self.main_layout.setContentsMargins(15, 15, 15, 15)
+        self.main_layout.setSpacing(10)
+
+        # Top Buttons (Select / Output)
+        self.layout_top_buttons = QHBoxLayout()
+        self.button_select = QPushButton("Select Videos")
         self.button_select.clicked.connect(self.select_videos)
         self.button_select.setEnabled(False)
+        self.button_select.setFixedHeight(50)
+        self.button_select.setStyleSheet(BUTTON_DISABLED_STYLE)
 
-        # Output Button
-        self.button_output = QPushButton("📂 Output Folder", self)
-        self.button_output.resize(OUTPUT_BUTTON.w, OUTPUT_BUTTON.h)
-        self.button_output.move(OUTPUT_BUTTON.x, OUTPUT_BUTTON.y)
+        self.button_output = QPushButton("📂 Output Folder")
         self.button_output.clicked.connect(self.select_output_dir)
+        self.button_output.setFixedHeight(50)
+        self.button_output.setStyleSheet(BUTTON_SELECT_STYLE)
 
-        # Compress Button
-        self.button_compress = QPushButton("Compress", self)
-        self.button_compress.resize(COMPRESS_BUTTON.w, COMPRESS_BUTTON.h)
-        self.button_compress.move(COMPRESS_BUTTON.x, COMPRESS_BUTTON.y)
+        self.layout_top_buttons.addWidget(self.button_select)
+        self.layout_top_buttons.addWidget(self.button_output)
+        self.main_layout.addLayout(self.layout_top_buttons)
+
+        # Compress / Abort Buttons
+        self.layout_action_buttons = QHBoxLayout()
+        self.button_compress = QPushButton("Compress")
         self.button_compress.clicked.connect(self.compress_videos)
         self.button_compress.setEnabled(False)
+        self.button_compress.setFixedHeight(50)
+        self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
 
-        # Abort Button
-        self.button_abort = QPushButton("Abort", self)
-        self.button_abort.resize(ABORT_BUTTON.w, ABORT_BUTTON.h)
-        self.button_abort.move(ABORT_BUTTON.x, ABORT_BUTTON.y)
+        self.button_abort = QPushButton("Abort")
         self.button_abort.clicked.connect(self.abort_compression)
         self.button_abort.setEnabled(False)
+        self.button_abort.setFixedHeight(50)
+        self.button_abort.setStyleSheet(BUTTON_DISABLED_STYLE)
 
-        # File Size Label
-        self.label_size = QLabel("Size (MB)", self)
-        self.label_size.resize(FILE_SIZE_LABEL.w, FILE_SIZE_LABEL.h)
-        self.label_size.move(FILE_SIZE_LABEL.x, FILE_SIZE_LABEL.y)
+        self.layout_action_buttons.addWidget(self.button_compress)
+        self.layout_action_buttons.addWidget(self.button_abort)
+        self.main_layout.addLayout(self.layout_action_buttons)
 
-        # File Size Entry
-        self.edit_size = QLineEdit(str(self.settings["target_size"]), self)
-        self.edit_size.resize(FILE_SIZE_ENTRY.w, FILE_SIZE_ENTRY.h)
-        self.edit_size.move(FILE_SIZE_ENTRY.x, FILE_SIZE_ENTRY.y)
-        self.edit_size.setEnabled(True)
-
-        # Device Label
-        self.label_device = QLabel("Device", self)
-        self.label_device.resize(DEVICE_LABEL.w, DEVICE_LABEL.h)
-        self.label_device.move(DEVICE_LABEL.x, DEVICE_LABEL.y)
-
-        # Device Dropdown
-        self.combo_device = QComboBox(self)
-        self.combo_device.resize(DEVICE_COMBOBOX.w, DEVICE_COMBOBOX.h)
-        self.combo_device.move(DEVICE_COMBOBOX.x, DEVICE_COMBOBOX.y)
+        # Settings Grid (Size, Device, Codec, Export, Audio)
+        self.layout_settings = QVBoxLayout()
         
-        # Determine available devices
+        def create_setting_row(label_text, widget):
+            row = QHBoxLayout()
+            label = QLabel(label_text)
+            label.setFixedWidth(100)
+            label.setStyleSheet(LABEL_STYLE)
+            widget.setStyleSheet(COMBOBOX_STYLE if isinstance(widget, QComboBox) else LINEEDIT_STYLE)
+            row.addWidget(label)
+            row.addWidget(widget)
+            return row
+
+        # File Size
+        self.edit_size = QLineEdit(str(self.settings.get("target_size", 20.0)))
+        self.main_layout.addLayout(create_setting_row("Size (MB)", self.edit_size))
+
+        # Custom Filename
+        self.edit_filename = QLineEdit("")
+        self.edit_filename.setPlaceholderText("Dejar vacio para usar nombre original")
+        self.main_layout.addLayout(create_setting_row("Output Name", self.edit_filename))
+
+        # Resolution
+        self.combo_resolution = QComboBox()
+        self.resolutions = [
+            "Original",
+            "4K (2160p)",
+            "1440p (QHD)",
+            "1080p (FHD)",
+            "720p (HD)",
+            "480p (SD)",
+            "360p"
+        ]
+        self.combo_resolution.addItems(self.resolutions)
+        self.main_layout.addLayout(create_setting_row("Resolution", self.combo_resolution))
+
+        # Device
+        self.combo_device = QComboBox()
         devices = ["CPU"]
-        
         has_intel = any("Intel" in gpu for gpu in self.hw_info["gpus"])
         has_amd = any("AMD" in gpu or "Radeon" in gpu for gpu in self.hw_info["gpus"])
         has_nvidia = any("NVIDIA" in gpu for gpu in self.hw_info["gpus"])
 
-        if has_intel:
-            devices.append("iGPU (Intel)")
-        if has_amd:
-            devices.append("iGPU (AMD)")
+        if has_intel: devices.append("iGPU (Intel)")
+        if has_amd: devices.append("iGPU (AMD)")
         if has_nvidia or (has_amd and len(self.hw_info["gpus"]) > 1):
             devices.append("Dedicated GPU")
         
-        # Ensure unique devices in case of duplicate detection
         devices = list(dict.fromkeys(devices))
         self.combo_device.addItems(devices)
         self.combo_device.currentIndexChanged.connect(self.update_codec_list)
+        self.main_layout.addLayout(create_setting_row("Device", self.combo_device))
 
-        # Codec Label
-        self.label_codec = QLabel("Codec", self)
-        self.label_codec.resize(CODEC_LABEL.w, CODEC_LABEL.h)
-        self.label_codec.move(CODEC_LABEL.x, CODEC_LABEL.y)
-
-        # Codec Dropdown
-        self.combo_codec = QComboBox(self)
-        self.combo_codec.resize(CODEC_COMBOBOX.w, CODEC_COMBOBOX.h)
-        self.combo_codec.move(CODEC_COMBOBOX.x, CODEC_COMBOBOX.y)
+        # Export (must be initialized before Codec, because codec changes update export formats)
+        self.combo_export = QComboBox()
+        self.all_video_exports = ["Original", "mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"]
+        self.audio_exports = ["Original", "mp3", "flac", "wav", "m4a", "ogg", "wma"]
+        self.audio_codecs = [
+            "MP3 128kbps", "MP3 192kbps", "MP3 320kbps", 
+            "AAC 128kbps", "AAC 192kbps", "AAC 256kbps", 
+            "FLAC (Lossless)", "WAV (Uncompressed)", "Copy (Original)"
+        ]
         
-        # Store all verified encoders and update list
+        # Codec → compatible container formats
+        self.codec_format_map = {
+            # NVENC
+            "h264_nvenc": ["mp4", "mkv", "avi", "mov", "flv", "m4v"],
+            "hevc_nvenc": ["mp4", "mkv", "mov", "m4v"],
+            "av1_nvenc":  ["mp4", "mkv", "webm"],
+            # AMF
+            "h264_amf":   ["mp4", "mkv", "avi", "mov", "flv", "m4v"],
+            "hevc_amf":   ["mp4", "mkv", "mov", "m4v"],
+            "av1_amf":    ["mp4", "mkv", "webm"],
+            # QSV
+            "h264_qsv":   ["mp4", "mkv", "avi", "mov", "flv", "m4v"],
+            "hevc_qsv":   ["mp4", "mkv", "mov", "m4v"],
+            "av1_qsv":    ["mp4", "mkv", "webm"],
+            # VAAPI
+            "h264_vaapi":  ["mp4", "mkv", "avi", "mov", "flv", "m4v"],
+            "hevc_vaapi":  ["mp4", "mkv", "mov", "m4v"],
+            "av1_vaapi":   ["mp4", "mkv", "webm"],
+            # Software
+            "libx264":     ["mp4", "mkv", "avi", "mov", "flv", "m4v"],
+            "libx265":     ["mp4", "mkv", "mov", "m4v"],
+            "libsvtav1":   ["mp4", "mkv", "webm"],
+            "libaom-av1":  ["mp4", "mkv", "webm"],
+            "libvvenc":    ["mp4", "mkv"],
+            # Lossless
+            "ffv1":        ["mkv", "avi"],
+        }
+
+        # Codec (update_codec_list will also call update_export_formats)
+        self.combo_codec = QComboBox()
         self.update_codec_list()
-        
-        # Select saved codec/device if available
+        self.combo_codec.currentIndexChanged.connect(self.update_export_formats)
+        self.main_layout.addLayout(create_setting_row("Codec", self.combo_codec))
+
+        # Export row (widget already created above)
+        self.video_devices = devices
+        self.main_layout.addLayout(create_setting_row("Export", self.combo_export))
+
+        # Audio
+        self.combo_audio = QComboBox()
+        self.audio_options = {
+            "Copy (original)": "copy",
+            "AAC (192k)": "aac",
+            "MP3 - LAME (192k)": "mp3",
+            "Opus (128k)": "opus",
+            "FLAC (lossless)": "flac",
+            "No Audio": "none",
+        }
+        self.combo_audio.addItems(self.audio_options.keys())
+        self.main_layout.addLayout(create_setting_row("Audio", self.combo_audio))
+
+        # Restore saved preferences
+        self.restore_settings()
+
+        # Info Labels Group
+        self.layout_info = QVBoxLayout()
+        self.layout_info.setSpacing(5)
+
+        self.label_path = QLabel("")
+        self.label_path.setWordWrap(True)
+        self.label_path.setStyleSheet(LABEL_STYLE)
+        self.label_path.setAlignment(Qt.AlignCenter)
+        self.label_path.setMinimumHeight(40)
+
+        self.label_info_size = QLabel("")
+        self.label_info_size.setStyleSheet(LABEL_STYLE)
+        self.label_info_size.setAlignment(Qt.AlignCenter)
+
+        self.label_quality = QLabel("")
+        self.label_quality.setWordWrap(True)
+        self.label_quality.setStyleSheet(LABEL_STYLE)
+        self.label_quality.setAlignment(Qt.AlignCenter)
+        self.label_quality.setMinimumHeight(60)
+
+        self.layout_info.addWidget(self.label_path)
+        self.layout_info.addWidget(self.label_info_size)
+        self.layout_info.addWidget(self.label_quality)
+        self.main_layout.addLayout(self.layout_info)
+
+        # Spacer to push progress/log to bottom
+        self.main_layout.addSpacerItem(QSpacerItem(20, 20, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+        # Error Label
+        self.label_error = QLabel("")
+        self.label_error.setStyleSheet(ERROR_LABEL_STYLE)
+        self.label_error.setMinimumHeight(40)
+        self.label_error.hide()
+        self.main_layout.addWidget(self.label_error)
+
+        # Log Area
+        self.label_log.setWordWrap(True)
+        self.label_log.setStyleSheet(LABEL_LOG_STYLE)
+        self.label_log.setMinimumHeight(80)
+        self.main_layout.addWidget(self.label_log)
+
+        # Progress Bar
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
+        self.progress_bar.setFixedHeight(25)
+        self.main_layout.addWidget(self.progress_bar)
+
+    def restore_settings(self):
         saved_device = self.settings.get("device", "CPU")
         dev_index = self.combo_device.findText(saved_device)
         if dev_index >= 0:
@@ -173,118 +353,20 @@ class Window(QWidget):
         if codec_index >= 0:
             self.combo_codec.setCurrentIndex(codec_index)
 
-        # Export Label
-        self.label_export = QLabel("Export", self)
-        self.label_export.resize(EXPORT_LABEL.w, EXPORT_LABEL.h)
-        self.label_export.move(EXPORT_LABEL.x, EXPORT_LABEL.y)
+        saved_res = self.settings.get("resolution", "Original")
+        res_index = self.combo_resolution.findText(saved_res)
+        if res_index >= 0:
+            self.combo_resolution.setCurrentIndex(res_index)
 
-        # Export Dropdown
-        self.combo_export = QComboBox(self)
-        self.combo_export.resize(EXPORT_COMBOBOX.w, EXPORT_COMBOBOX.h)
-        self.combo_export.move(EXPORT_COMBOBOX.x, EXPORT_COMBOBOX.y)
-        
-        self.video_exports = ["Original", "mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"]
-        self.audio_exports = ["Original", "mp3", "flac", "wav", "m4a", "ogg", "wma"]
-        self.audio_codecs = [
-            "MP3 128kbps", "MP3 192kbps", "MP3 320kbps", 
-            "AAC 128kbps", "AAC 192kbps", "AAC 256kbps", 
-            "FLAC (Lossless)", "WAV (Uncompressed)", "Copy (Original)"
-        ]
-        self.combo_export.addItems(self.video_exports)
-        self.video_devices = devices
-
-        # Audio Label
-        self.label_audio = QLabel("Audio", self)
-        self.label_audio.resize(AUDIO_LABEL.w, AUDIO_LABEL.h)
-        self.label_audio.move(AUDIO_LABEL.x, AUDIO_LABEL.y)
-
-        # Audio Dropdown
-        self.combo_audio = QComboBox(self)
-        self.combo_audio.resize(AUDIO_COMBOBOX.w, AUDIO_COMBOBOX.h)
-        self.combo_audio.move(AUDIO_COMBOBOX.x, AUDIO_COMBOBOX.y)
-        audio_options = {
-            "Copy (original)": "copy",
-            "AAC (192k)": "aac",
-            "MP3 - LAME (192k)": "mp3",
-            "Opus (128k)": "opus",
-            "FLAC (lossless)": "flac",
-            "No Audio": "none",
-        }
-        self.audio_options = audio_options
-        self.combo_audio.addItems(audio_options.keys())
-        
-        # Restore saved audio preference
         saved_audio = self.settings.get("audio", "Copy (original)")
         audio_index = self.combo_audio.findText(saved_audio)
         if audio_index >= 0:
             self.combo_audio.setCurrentIndex(audio_index)
 
-        # Log Label
-        self.label_log = QLabel(g.READY_TEXT, self)
-        self.label_log.setEnabled(True)
-        self.label_log.resize(LOG_AREA.w, LOG_AREA.h)
-        self.label_log.move(LOG_AREA.x, LOG_AREA.y)
-        self.label_log.setWordWrap(True)
-
-        # Info Labels
-        self.label_path = QLabel("", self)
-        self.label_path.resize(INFO_PATH_LABEL.w, INFO_PATH_LABEL.h)
-        self.label_path.move(INFO_PATH_LABEL.x, INFO_PATH_LABEL.y)
-        self.label_path.setWordWrap(True)
-        self.label_path.setStyleSheet(LABEL_STYLE)
-        self.label_path.setAlignment(Qt.AlignCenter)
-
-        self.label_info_size = QLabel("", self)
-        self.label_info_size.resize(INFO_SIZE_LABEL.w, INFO_SIZE_LABEL.h)
-        self.label_info_size.move(INFO_SIZE_LABEL.x, INFO_SIZE_LABEL.y)
-        self.label_info_size.setStyleSheet(LABEL_STYLE)
-        self.label_info_size.setAlignment(Qt.AlignCenter)
-
-        self.label_quality = QLabel("", self)
-        self.label_quality.resize(INFO_QUALITY_LABEL.w, INFO_QUALITY_LABEL.h)
-        self.label_quality.move(INFO_QUALITY_LABEL.x, INFO_QUALITY_LABEL.y)
-        self.label_quality.setWordWrap(True)
-        self.label_quality.setStyleSheet(LABEL_STYLE)
-        self.label_quality.setAlignment(Qt.AlignCenter)
-
-        # Error Label (Modern Red Message)
-        self.label_error = QLabel("", self)
-        self.label_error.resize(ERROR_LABEL.w, ERROR_LABEL.h)
-        self.label_error.move(ERROR_LABEL.x, ERROR_LABEL.y)
-        self.label_error.setStyleSheet(ERROR_LABEL_STYLE)
-        self.label_error.hide()
-
-        # Progress Bar
-        self.progress_bar = QProgressBar(self)
-        self.progress_bar.resize(PROGRESS_BAR.w, PROGRESS_BAR.h)
-        self.progress_bar.move(PROGRESS_BAR.x, PROGRESS_BAR.y)
-        self.progress_bar.setRange(0, 100)
-
-        self.download_thread = None
-        self.compress_thread = None
-
-        self.button_select.setStyleSheet(BUTTON_DISABLED_STYLE)
-        self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
-        self.button_abort.setStyleSheet(BUTTON_DISABLED_STYLE)
-        self.button_output.setStyleSheet(BUTTON_SELECT_STYLE)
-        self.label_size.setStyleSheet(LABEL_STYLE)
-        self.edit_size.setStyleSheet(LINEEDIT_STYLE)
-        self.label_device.setStyleSheet(LABEL_STYLE)
-        self.combo_device.setStyleSheet(COMBOBOX_STYLE)
-        self.label_codec.setStyleSheet(LABEL_STYLE)
-        self.combo_codec.setStyleSheet(COMBOBOX_STYLE)
-        self.label_export.setStyleSheet(LABEL_STYLE)
-        self.combo_export.setStyleSheet(COMBOBOX_STYLE)
-        self.label_audio.setStyleSheet(LABEL_STYLE)
-        self.combo_audio.setStyleSheet(COMBOBOX_STYLE)
-        self.label_log.setStyleSheet(LABEL_LOG_STYLE)
-        self.progress_bar.setStyleSheet(PROGRESS_BAR_STYLE)
-
-        self.verify_ffmpeg()
-
     def closeEvent(self, event):
         # Save settings when closing
         self.settings["target_size"] = float(self.edit_size.text())
+        self.settings["resolution"] = self.combo_resolution.currentText()
         self.settings["device"] = self.combo_device.currentText()
         self.settings["codec"] = self.combo_codec.currentText()
         self.settings["audio"] = self.combo_audio.currentText()
@@ -296,9 +378,11 @@ class Window(QWidget):
 
         event.accept()
 
-    def reset(self):
+    def reset(self, preserve_queue=False):
         g.compressing = False
-        g.queue = []
+        if not preserve_queue:
+            g.queue = []
+            
         self.button_select.setEnabled(True)
         self.button_select.setStyleSheet(BUTTON_SELECT_STYLE)
         self.button_select.setFocus()
@@ -306,12 +390,24 @@ class Window(QWidget):
         self.button_output.setEnabled(True)
         self.button_output.setStyleSheet(BUTTON_SELECT_STYLE)
         
-        self.button_compress.setEnabled(False)
-        self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
+        if g.queue:
+            self.button_compress.setEnabled(True)
+            self.button_compress.setStyleSheet(BUTTON_COMPRESS_STYLE)
+        else:
+            self.button_compress.setEnabled(False)
+            self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
+            
         self.button_abort.setEnabled(False)
         self.button_abort.setStyleSheet(BUTTON_DISABLED_STYLE)
+        
         self.edit_size.setEnabled(True)
+        self.combo_resolution.setEnabled(True)
         self.combo_codec.setEnabled(True)
+        self.combo_device.setEnabled(True)
+        self.combo_export.setEnabled(True)
+        self.combo_audio.setEnabled(True)
+        self.edit_filename.setEnabled(True)
+        
         self.update_log(g.READY_TEXT)
         self.update_progress(0)
 
@@ -322,10 +418,11 @@ class Window(QWidget):
             self.reset()
         else:
             self.download_thread = DownloadThread()
-            self.download_thread.installed.connect(self.installed)
-            self.download_thread.update_log.connect(self.update_log)
-            self.download_thread.update_progress.connect(self.update_progress)
-            self.download_thread.start()
+            if self.download_thread:
+                self.download_thread.installed.connect(self.installed)
+                self.download_thread.update_log.connect(self.update_log)
+                self.download_thread.update_progress.connect(self.update_progress)
+                self.download_thread.start()
 
         # Show detected system and hardware
         os_info = f"{platform.system()} {platform.release()}"
@@ -391,12 +488,14 @@ class Window(QWidget):
             self.combo_codec.addItems(self.audio_codecs)
             # Disable irrelevant UI elements
             self.edit_size.setEnabled(False)
+            self.combo_resolution.setEnabled(False)
             self.combo_audio.setEnabled(False)
         else:
             self.combo_device.addItems(self.video_devices)
-            self.combo_export.addItems(self.video_exports)
+            self.update_export_formats()
             # Re-enable elements
             self.edit_size.setEnabled(True)
+            self.combo_resolution.setEnabled(True)
             self.combo_audio.setEnabled(True)
             self.update_codec_list()
             
@@ -439,6 +538,7 @@ class Window(QWidget):
     def compress_videos(self):
         g.compressing = True
         self.label_error.hide()
+        self.last_error_occured = False
         self.button_select.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.button_output.setStyleSheet(BUTTON_DISABLED_STYLE)
         self.button_compress.setStyleSheet(BUTTON_DISABLED_STYLE)
@@ -448,7 +548,13 @@ class Window(QWidget):
         self.button_output.setEnabled(False)
         self.button_compress.setEnabled(False)
         self.edit_size.setEnabled(False)
+        self.combo_resolution.setEnabled(False)
         self.combo_codec.setEnabled(False)
+        self.combo_device.setEnabled(False)
+        self.combo_export.setEnabled(False)
+        self.combo_audio.setEnabled(False)
+        self.edit_filename.setEnabled(False)
+        
         export_choice = self.combo_export.currentText()
         export_format = "Original" if "Original" in export_choice else export_choice
         
@@ -461,17 +567,21 @@ class Window(QWidget):
             self.combo_codec.currentText(),
             export_format,
             audio_codec,
-            self.is_audio_only
+            self.is_audio_only,
+            self.combo_resolution.currentText(),
+            self.edit_filename.text().strip()
         )
-        self.compress_thread.completed.connect(self.completed)
-        self.compress_thread.update_log.connect(self.update_log)
-        self.compress_thread.update_progress.connect(self.update_progress)
-        self.compress_thread.error_msg.connect(self.show_error)
-        self.compress_thread.start()
+        if self.compress_thread:
+            self.compress_thread.completed.connect(self.completed)
+            self.compress_thread.update_log.connect(self.update_log)
+            self.compress_thread.update_progress.connect(self.update_progress)
+            self.compress_thread.error_msg.connect(self.show_error)
+            self.compress_thread.start()
 
     def show_error(self, message):
         self.label_error.setText(message)
         self.label_error.show()
+        self.last_error_occured = True
 
     def abort_compression(self):
         kill_ffmpeg()
@@ -482,33 +592,77 @@ class Window(QWidget):
             return
             
         device = self.combo_device.currentText()
+        self.combo_codec.blockSignals(True)
         self.combo_codec.clear()
         
-        filtered = []
-        if device == "CPU":
-            # Show only software encoders
-            filtered = [e for e in self.all_encoders if not any(hw in e for hw in ["nvenc", "amf", "qsv"])]
-        elif "iGPU (Intel)" in device:
-            # Show Intel QSV encoders and VAAPI (on Linux)
-            filtered = [e for e in self.all_encoders if "qsv" in e or ("vaapi" in e and platform.system() == "Linux")]
-        elif "iGPU (AMD)" in device:
-            # Show AMD AMF encoders and VAAPI (on Linux)
-            filtered = [e for e in self.all_encoders if "amf" in e or ("vaapi" in e and platform.system() == "Linux")]
-        elif "Dedicated" in device:
-            # Show NVENC, AMF or VAAPI (on Linux)
-            filtered = [e for e in self.all_encoders if "nvenc" in e or "amf" in e or ("vaapi" in e and platform.system() == "Linux")]
+        match device:
+            case "CPU":
+                # Show only software encoders
+                filtered = [e for e in self.all_encoders if not any(hw in e for hw in ["nvenc", "amf", "qsv"])]
+            case d if "iGPU (Intel)" in d:
+                # Show Intel QSV encoders and VAAPI (on Linux)
+                filtered = [e for e in self.all_encoders if "qsv" in e or ("vaapi" in e and platform.system() == "Linux")]
+            case d if "iGPU (AMD)" in d:
+                # Show AMD AMF encoders and VAAPI (on Linux)
+                filtered = [e for e in self.all_encoders if "amf" in e or ("vaapi" in e and platform.system() == "Linux")]
+            case d if "Dedicated" in d:
+                # Show NVENC, AMF or VAAPI (on Linux)
+                filtered = [e for e in self.all_encoders if "nvenc" in e or "amf" in e or ("vaapi" in e and platform.system() == "Linux")]
+            case _:
+                filtered = ["libx264"]
             
         if not filtered:
-            # Fallback to libx264 if no compatible encoder found
             filtered = ["libx264"]
             
         self.combo_codec.addItems(filtered)
+        self.combo_codec.blockSignals(False)
+        
+        # Update export formats for the new codec
+        self.update_export_formats()
+
+    def update_export_formats(self):
+        """Update the export format dropdown based on the currently selected codec."""
+        if hasattr(self, 'label_error'):
+            self.label_error.hide()
+        if self.is_audio_only:
+            return
+        
+        codec_text = self.combo_codec.currentText()
+        if not codec_text:
+            return
+        
+        # Extract the pure codec name (remove suffixes like " (Standard 8-bit)")
+        pure_codec = codec_text.split(" ")[0]
+        
+        # Look up compatible formats
+        compatible = self.codec_format_map.get(pure_codec, None)
+        
+        if compatible is None:
+            # Unknown codec, show all formats
+            compatible = ["mp4", "mkv", "avi", "mov", "webm", "flv", "m4v"]
+        
+        # Save currently selected format to restore if still valid
+        current_export = self.combo_export.currentText()
+        
+        self.combo_export.blockSignals(True)
+        self.combo_export.clear()
+        self.combo_export.addItem("Original")
+        self.combo_export.addItems(compatible)
+        self.combo_export.blockSignals(False)
+        
+        # Restore previous selection if it's still available
+        restore_index = self.combo_export.findText(current_export)
+        if restore_index >= 0:
+            self.combo_export.setCurrentIndex(restore_index)
 
     def update_log(self, text):
-        self.label_log.setText(text)
+        if self.label_log:
+            self.label_log.setText(text)
+        print(text)
 
     def update_progress(self, progress_percentage):
-        self.progress_bar.setValue(progress_percentage)
+        if self.progress_bar:
+            self.progress_bar.setValue(progress_percentage)
 
     def installed(self):
         g.ffmpeg_installed = True
@@ -527,21 +681,28 @@ class Window(QWidget):
 
     def completed(self, aborted=False):
         g.compressing = False
-        self.compress_thread.terminate()
-        self.reset()
+        if self.compress_thread:
+            self.compress_thread.terminate()
+            
+        was_error = getattr(self, 'last_error_occured', False)
+        self.reset(preserve_queue=True) # Always preserve queue to allow re-compression
+        
         n = Notify()
-        n.title = "Done!" if not aborted else "Aborted!"
-        n.message = (
-            "Your videos are ready." if not aborted else "Your videos are cooked!"
-        )
+        if was_error:
+            n.title = "Error!"
+            n.message = "There was an error during compression."
+        else:
+            n.title = "Done!" if not aborted else "Aborted!"
+            n.message = "Your videos are ready." if not aborted else "Your videos are cooked!"
+            
         n.icon = os.path.join(g.res_dir, "icon.ico")
         n.send()
 
-        if not aborted:
+        if not aborted and not was_error:
             # os.startfile is Windows-only
-            if platform.system() == "Windows":
+            if hasattr(os, "startfile"):
                 os.startfile(g.output_dir)
-            else:
+            elif platform.system() == "Linux":
                 subprocess.Popen(["xdg-open", g.output_dir])
 
 

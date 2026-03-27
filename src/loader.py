@@ -116,7 +116,7 @@ class LoadingThread(QThread):
             "h264_amf", "hevc_amf", "av1_amf",
             "h264_qsv", "hevc_qsv", "av1_qsv",
             "h264_vaapi", "hevc_vaapi", "av1_vaapi",
-            "libx264", "libx265", "libsvtav1"
+            "libx264", "libx265", "libsvtav1", "ffv1"
         ]
         
         total = len(hardware_priority)
@@ -125,18 +125,16 @@ class LoadingThread(QThread):
             
             # Only test if the binary actually has it
             if name in all_video_encoders:
-                # For hardware encoders, check if they are actually supported by the current hardware
+                # For hardware encoders, run quality-based capability test
                 if any(hw in name for hw in ["nvenc", "amf", "qsv", "vaapi"]):
                     if is_encoder_supported(name):
-                        if "nvenc" in name:
-                            if is_encoder_supported(name, "p010le"):
-                                detected_encoders.append(f"{name} (Modern 10-bit)")
-                                self.tag_added.emit(f"Codec: {name} (10-bit)", "#CBA6F7")
-                            detected_encoders.append(f"{name} (Standard 8-bit)")
-                            self.tag_added.emit(f"Codec: {name} (8-bit)", "#89B4FA")
-                        else:
-                            detected_encoders.append(name)
-                            self.tag_added.emit(f"Codec: {name}", "#89B4FA")
+                        if is_encoder_supported(name, "p010le"):
+                            detected_encoders.append(f"{name} (Modern 10-bit)")
+                            self.tag_added.emit(f"Codec: {name} (10-bit)", "#CBA6F7")
+                        detected_encoders.append(f"{name} (Standard 8-bit)")
+                        self.tag_added.emit(f"Codec: {name} (8-bit)", "#89B4FA")
+                    else:
+                        self.tag_added.emit(f"Codec: {name} (failed test)", "#F38BA8")
                 else:
                     # Software encoders are usually safe if present in binary
                     detected_encoders.append(name)

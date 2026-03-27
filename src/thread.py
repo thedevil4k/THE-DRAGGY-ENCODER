@@ -3,58 +3,58 @@ import subprocess
 import os
 import platform
 import src.globals as g
+from pathlib import Path
 from math import ceil, floor
 from PySide6.QtCore import QThread, Signal
 
 
 def get_video_length(file_path):
     cmd = [
-        g.ffprobe_path,
-        "-v",
-        "quiet",
-        "-show_entries",
-        "format=duration",
-        "-of",
-        "json",
-        file_path,
+        str(g.ffprobe_path),
+        "-v", "quiet",
+        "-show_entries", "format=duration",
+        "-of", "json",
+        str(file_path),
     ]
-
-    output = subprocess.check_output(cmd)
-    data = json.loads(output)
-
-    if "format" in data:
-        duration = data["format"].get("duration")
-        return float(duration) if duration else 0
-
+    try:
+        output = subprocess.check_output(cmd)
+        data = json.loads(output)
+        if "format" in data:
+            duration = data["format"].get("duration")
+            return float(duration) if duration else 0
+    except Exception as e:
+        print(f"Error getting video length: {e}")
     return 0
 
 
 def get_video_metadata(file_path):
     """Returns a dictionary with video and audio metadata."""
+    file_path = str(file_path)
     try:
         # Video stream info
         cmd_video = [
-            g.ffprobe_path, "-v", "quiet",
+            str(g.ffprobe_path), "-v", "quiet",
             "-select_streams", "v:0",
-            "-show_entries", "stream=width,height,codec_name,bit_rate,pix_fmt",
+            "-show_entries", "stream=width,height,codec_name,bit_rate,pix_fmt,display_aspect_ratio",
             "-of", "json", file_path,
         ]
         output = subprocess.check_output(cmd_video)
         data = json.loads(output)
 
-        width, height, codec, bitrate, pix_fmt = None, None, None, None, "Unknown"
-        if "streams" in data and len(data["streams"]) > 0:
-            stream = data["streams"][0]
+        width, height, codec, bitrate, pix_fmt, display_ar = None, None, None, None, "Unknown", None
+        if "streams" in data and (streams := data["streams"]):
+            stream = streams[0]
             width = stream.get("width")
             height = stream.get("height")
             codec = stream.get("codec_name")
             bitrate = stream.get("bit_rate")
             pix_fmt = stream.get("pix_fmt", "Unknown")
+            display_ar = stream.get("display_aspect_ratio")
 
         # Overall bitrate fallback
         if not bitrate:
             cmd_fmt = [
-                g.ffprobe_path, "-v", "quiet",
+                str(g.ffprobe_path), "-v", "quiet",
                 "-show_entries", "format=bit_rate",
                 "-of", "json", file_path,
             ]
@@ -67,29 +67,51 @@ def get_video_metadata(file_path):
         audio_bitrate = "N/A"
         try:
             cmd_audio = [
-                g.ffprobe_path, "-v", "quiet",
+                str(g.ffprobe_path), "-v", "quiet",
                 "-select_streams", "a:0",
                 "-show_entries", "stream=codec_name,bit_rate",
                 "-of", "json", file_path,
             ]
             audio_output = subprocess.check_output(cmd_audio)
             audio_data = json.loads(audio_output)
-            if "streams" in audio_data and len(audio_data["streams"]) > 0:
-                a_stream = audio_data["streams"][0]
+            if "streams" in audio_data and (a_streams := audio_data["streams"]):
+                a_stream = a_streams[0]
                 audio_codec = a_stream.get("codec_name", "Unknown")
-                a_br = a_stream.get("bit_rate")
-                if a_br:
+                if a_br := a_stream.get("bit_rate"):
                     audio_bitrate = f"{round(float(a_br) / 1000)} kbps"
-        except:
+        except Exception:
             pass
 
+        ar_str = ""
+        if display_ar and display_ar != "N/A" and display_ar != "0:1":
+            ar_str = display_ar
+        elif width and height:
+            import math
+            ratio = width / height
+            if abs(ratio - 16/9) < 0.05: ar_str = "16:9"
+            elif abs(ratio - 9/16) < 0.05: ar_str = "9:16"
+            elif abs(ratio - 4/3) < 0.05: ar_str = "4:3"
+            elif abs(ratio - 3/4) < 0.05: ar_str = "3:4"
+            elif abs(ratio - 1.0) < 0.05: ar_str = "1:1"
+            elif abs(ratio - 21/9) < 0.05: ar_str = "21:9"
+            elif abs(ratio - 18/9) < 0.05: ar_str = "18:9"
+            elif abs(ratio - 9/18) < 0.05: ar_str = "9:18"
+            else:
+                g_val = math.gcd(width, height)
+                ar_str = f"{width//g_val}:{height//g_val}"
+
         res_str = f"{width}x{height}" if width and height else "Unknown"
+        if ar_str:
+            res_str += f" ({ar_str})"
+
         codec_str = codec if codec else "Unknown"
         bitrate_str = f"{round(float(bitrate) / 1000)} kbps" if bitrate else "Unknown"
         depth = "10-bit" if "10" in pix_fmt else "12-bit" if "12" in pix_fmt else "8-bit"
         
         return {
             "resolution": res_str,
+            "width": width,
+            "height": height,
             "codec": codec_str,
             "bitrate": bitrate_str,
             "pix_fmt": pix_fmt,
@@ -100,7 +122,7 @@ def get_video_metadata(file_path):
     except Exception as e:
         print(f"Error getting metadata: {e}")
 
-    return {"resolution": "Unknown", "codec": "Unknown", "bitrate": "Unknown", "pix_fmt": "Unknown", "depth": "Unknown", "audio_codec": "Unknown", "audio_bitrate": "Unknown"}
+    return {"resolution": "Unknown", "width": None, "height": None, "codec": "Unknown", "bitrate": "Unknown", "pix_fmt": "Unknown", "depth": "Unknown", "audio_codec": "Unknown", "audio_bitrate": "Unknown"}
 
 
 
@@ -152,54 +174,82 @@ def calculate_video_bitrate(file_path, target_size_mb):
 
 def is_encoder_supported(encoder_name, pix_fmt=None):
     """
-    Checks if the hardware actually supports the encoder by running a 1-frame test.
-    This is highly reliable as it interacts directly with the drivers.
+    Checks if the hardware truly supports the encoder by running a short test encode.
+    Uses quality-based encoding (like HandBrake's ICQ mode) which is more compatible
+    with hardware encoders than bitrate mode.
     """
     try:
         cmd = [
-            g.ffmpeg_path,
+            str(g.ffmpeg_path),
             "-v", "error",
             "-f", "lavfi",
-            "-i", "color=c=black:s=128x128",
+            "-i", "color=c=black:s=256x256:d=1",
             "-c:v", encoder_name,
-            "-frames:v", "1"
+            "-frames:v", "5",
         ]
+        
+        # Use quality-based encoding for hardware encoders (more compatible)
+        if "qsv" in encoder_name:
+            cmd.extend(["-global_quality", "25"])
+        elif "nvenc" in encoder_name:
+            cmd.extend(["-cq", "28"])
+        elif "amf" in encoder_name:
+            cmd.extend(["-quality", "balanced"])
+        elif "vaapi" in encoder_name:
+            cmd.extend(["-qp", "25"])
+        
         if pix_fmt:
             cmd.extend(["-pix_fmt", pix_fmt])
-        
+
         cmd.extend(["-f", "null", "-"])
-        
-        kwargs = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL, "check": True, "timeout": 5}
+
+        kwargs = {
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.PIPE,
+            "timeout": 15,
+        }
         if platform.system() == "Windows":
             kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
 
-        subprocess.run(cmd, **kwargs)
+        result = subprocess.run(cmd, **kwargs)
+
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="ignore") if result.stderr else ""
+            print(f"  Encoder {encoder_name} failed (rc={result.returncode}): {stderr_text[:200]}")
+            return False
+
         return True
-    except:
+    except subprocess.TimeoutExpired:
+        print(f"  Encoder {encoder_name} timed out")
+        return False
+    except Exception as e:
+        print(f"  Encoder {encoder_name} error: {e}")
         return False
 
 
-
-
-def get_available_encoders():
-    """Detects available video encoders from ffmpeg."""
+def get_available_encoders(gpu_names=None):
+    """Detects available video encoders from ffmpeg.
+    
+    Each hardware encoder is tested with a quality-based encode to verify
+    real hardware support. Software encoders are assumed available if present.
+    """
     print("  get_available_encoders start")
     try:
-        cmd = [g.ffmpeg_path, "-hide_banner", "-encoders"]
+        cmd = [str(g.ffmpeg_path), "-hide_banner", "-encoders"]
         print(f"  Running: {' '.join(cmd)}")
         kwargs = {"universal_newlines": True}
         if platform.system() == "Windows":
-            kwargs["creationflags"] = 0x08000000
+            kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
         output = subprocess.check_output(cmd, **kwargs)
         
         encoders = []
-        # common encoders we are interested in (priority)
+        # Hardware encoders to check (in priority order)
         hardware_priority = [
             "h264_nvenc", "hevc_nvenc", "av1_nvenc",
             "h264_amf", "hevc_amf", "av1_amf",
             "h264_qsv", "hevc_qsv", "av1_qsv",
             "h264_vaapi", "hevc_vaapi", "av1_vaapi",
-            "libx264", "libx265", "libsvtav1", "libaom-av1", "libvvenc"
+            "libx264", "libx265", "libsvtav1", "libaom-av1", "libvvenc", "ffv1"
         ]
         
         all_video_encoders = []
@@ -217,22 +267,21 @@ def get_available_encoders():
                     name = parts[1]
                     all_video_encoders.append(name)
         
-        # Build the final list: Priority ones first (if supported)
+        # Build the final list: Priority ones first (if truly supported)
         encoders = []
         for name in hardware_priority:
             if name in all_video_encoders:
-                # For hardware encoders, check if they are actually supported by the current hardware
+                # For hardware encoders, run a quality-based capability test
                 if any(hw in name for hw in ["nvenc", "amf", "qsv", "vaapi"]):
-                    print(f"  Testing hardware encoder: {name}")
                     if is_encoder_supported(name):
-                        # For NVENC, also check 10-bit support
-                        if "nvenc" in name:
-                            if is_encoder_supported(name, "p010le"):
-                                encoders.append(f"{name} (Modern 10-bit)")
-                            encoders.append(f"{name} (Standard 8-bit)")
-                        else:
-                            encoders.append(name)
+                        # For all hardware encoders, check 10-bit support
+                        if is_encoder_supported(name, "p010le"):
+                            encoders.append(f"{name} (Modern 10-bit)")
+                        encoders.append(f"{name} (Standard 8-bit)")
+                    else:
+                        print(f"  Encoder {name} failed test, skipping.")
                 else:
+                    # Software encoders (libx264, libx265, ffv1, etc.)
                     encoders.append(name)
         
         # Add a default if nothing detected
@@ -297,177 +346,306 @@ class CompressionThread(QThread):
     error_msg = Signal(str)
     completed = Signal()
 
-    def __init__(self, target_size_mb, codec, export_format="Original", audio_codec="copy", is_audio_only=False, parent=None):
+    def __init__(self, target_size_mb, codec, export_format="Original", audio_codec="copy", is_audio_only=False, resolution="Original", custom_name="", parent=None):
         super().__init__(parent)
         self.target_size_mb = target_size_mb
         self.codec = codec
         self.export_format = export_format
         self.audio_codec = audio_codec
         self.is_audio_only = is_audio_only
+        self.resolution = resolution
+        self.custom_name = custom_name
         self.process = None
 
     def run_audio_pass(self, file_path):
-        file_name = os.path.basename(file_path)
+        import re
+        file_path = Path(file_path)
+        file_name = file_path.name
+        v_len = get_video_length(file_path)
 
         total_steps = len(g.queue)
         current_step = len(g.completed)
-        progress_percentage = (current_step / total_steps) * 100
-        self.update_progress.emit(int(progress_percentage))
+        base_percentage = (current_step / total_steps) * 100
+        self.update_progress.emit(int(base_percentage))
         
-        status_msg = f"""
-[Audio Encoding Status]
-File: {file_name}
-Queue: {len(g.completed) + 1}/{len(g.queue)}
-Preset: {self.codec}
-"""
-        file_name_without_ext, original_ext = os.path.basename(file_path).rsplit(".", 1)
+        status_msg = f"\n[Audio Encoding Status]\nFile: {file_name}\nQueue: {len(g.completed) + 1}/{len(g.queue)}\nPreset: {self.codec}\n"
+        
+        file_name_stem = file_path.stem
+        original_ext = file_path.suffix.lstrip(".")
         
         out_ext = original_ext
         if self.export_format != "Original" and self.export_format:
             out_ext = self.export_format.lower().replace(".", "")
             
-        output_path = os.path.join(
-            g.output_dir, f"{file_name_without_ext}-compressed.{out_ext}"
-        )
+        if self.custom_name:
+            out_name = self.custom_name
+            if len(g.queue) > 1:
+                out_name = f"{self.custom_name}_{len(g.completed) + 1}"
+            output_path = Path(g.output_dir) / f"{out_name}.{out_ext}"
+        else:
+            output_path = Path(g.output_dir) / f"{file_name_stem}-compressed.{out_ext}"
         print(status_msg)
 
-        cmd_args = [
-            f'"{g.ffmpeg_path}"',
-            f'-i "{file_path}"',
-            "-y",
-        ]
+        cmd = [str(g.ffmpeg_path), "-i", str(file_path), "-y"]
 
-        if "MP3" in self.codec:
-            cmd_args.extend(["-c:a", "libmp3lame"])
-            if "128" in self.codec: cmd_args.extend(["-b:a", "128k"])
-            elif "192" in self.codec: cmd_args.extend(["-b:a", "192k"])
-            elif "320" in self.codec: cmd_args.extend(["-b:a", "320k"])
-        elif "AAC" in self.codec:
-            cmd_args.extend(["-c:a", "aac"])
-            if "128" in self.codec: cmd_args.extend(["-b:a", "128k"])
-            elif "192" in self.codec: cmd_args.extend(["-b:a", "192k"])
-            elif "256" in self.codec: cmd_args.extend(["-b:a", "256k"])
-        elif "FLAC" in self.codec:
-            cmd_args.extend(["-c:a", "flac"])
-        elif "WAV" in self.codec:
-            cmd_args.extend(["-c:a", "pcm_s16le"])
-        elif "Copy" in self.codec:
-            cmd_args.extend(["-c:a", "copy"])
+        match self.codec:
+            case c if "MP3" in c:
+                cmd.extend(["-c:a", "libmp3lame"])
+                if "128" in c: cmd.extend(["-b:a", "128k"])
+                elif "192" in c: cmd.extend(["-b:a", "192k"])
+                elif "320" in c: cmd.extend(["-b:a", "320k"])
+            case c if "AAC" in c:
+                cmd.extend(["-c:a", "aac"])
+                if "128" in c: cmd.extend(["-b:a", "128k"])
+                elif "192" in c: cmd.extend(["-b:a", "192k"])
+                elif "256" in c: cmd.extend(["-b:a", "256k"])
+            case c if "FLAC" in c:
+                cmd.extend(["-c:a", "flac"])
+            case c if "WAV" in c:
+                cmd.extend(["-c:a", "pcm_s16le"])
+            case c if "Copy" in c:
+                cmd.extend(["-c:a", "copy"])
+            case _:
+                cmd.extend(["-c:a", "copy"])
 
-        cmd_args.append(f'"{output_path}"')
+        cmd.append(str(output_path))
 
-        cmd = " ".join(cmd_args)
-        print(f"Running command: {cmd}")
+        print(f"Running command: {' '.join(cmd)}")
         self.update_log.emit(status_msg)
-        self.process = subprocess.check_call(cmd, shell=True)
+        
+        creation_flags = 0x08000000 if platform.system() == "Windows" else 0
+        self.process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            universal_newlines=True, 
+            creationflags=creation_flags
+        )
+        
+        if self.process.stdout:
+            for line in self.process.stdout:
+                if not g.compressing:
+                    self.process.terminate()
+                    break
+                print(line, end="")
+                
+                # Parse time=... for real-time progress
+                match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", line)
+                if match and v_len > 0:
+                    h, m, s = map(float, match.groups())
+                    current_time = h * 3600 + m * 60 + s
+                    pass_progress = min(1.0, current_time / v_len)
+                    current_percentage = base_percentage + (pass_progress * 100 / total_steps)
+                    self.update_progress.emit(int(current_percentage))
+                    # Optionally update the log with the time string if desired
+                    
+        self.process.wait()
 
     def run_pass(self, file_path):
+        import re
+        file_path = Path(file_path)
+        v_len = get_video_length(file_path)
         video_rate = calculate_video_bitrate(file_path, self.target_size_mb)
         metadata = get_video_metadata(file_path)
         pix_fmt = metadata.get("pix_fmt", "unknown")
-        file_name = os.path.basename(file_path)
+        file_name = file_path.name
+
+        pure_codec = self.codec.split(" ")[0]
+        is_hw_encoder = any(hw in pure_codec for hw in ["nvenc", "amf", "qsv", "vaapi"])
+        is_lossless = pure_codec == "ffv1"
 
         orig_depth = metadata.get("depth", "Unknown")
         target_depth = orig_depth
-        if "nvenc" in self.codec and "10" in pix_fmt:
+        if is_hw_encoder and "10" in pix_fmt and "(Standard 8-bit)" in self.codec:
             target_depth = "8-bit (Converted for compatibility)"
 
-        for i in range(2):
-            # Calculate total progress based on queue position and current pass
-            total_steps = len(g.queue) * 2  # Total number of passes for all videos
-            current_step = (
-                len(g.completed) * 2
-            ) + i  # Completed videos * 2 passes + current pass
-            progress_percentage = (current_step / total_steps) * 100
-            self.update_progress.emit(int(progress_percentage))
-            
-            status_msg = f"""
-[Compression Status]
-File: {file_name}
-Queue: {len(g.completed) + 1}/{len(g.queue)}
-Pass: {i + 1}/2
-Target Size: {self.target_size_mb}MB
-Bitrate: {video_rate}k
-Encoder: {self.codec}
-Depth: {orig_depth} -> {target_depth}
-"""
+        # Resolution scaling logic
+        orig_width = metadata.get("width")
+        orig_height = metadata.get("height")
+        try:
+            orig_width = int(orig_width) if orig_width else 0
+            orig_height = int(orig_height) if orig_height else 0
+        except ValueError:
+            orig_width = orig_height = 0
 
-            # Rest of the existing code remains the same
-            bitrate_str = f"{video_rate}k"
-            file_name_without_ext, original_ext = os.path.basename(file_path).rsplit(
-                ".", 1
-            )
-            
-            # Determine output extension
-            out_ext = original_ext
-            if self.export_format != "Original" and self.export_format:
-                out_ext = self.export_format.lower().replace(".", "")
+        target_res = None
+        if self.resolution != "Original":
+            match = re.search(r"(\d+)p", self.resolution)
+            if match:
+                target_res = int(match.group(1))
+
+        vf_filters = []
+        if target_res:
+            if orig_width > 0 and orig_height > 0:
+                if orig_width >= orig_height:
+                    # Landscape: target_res is height (e.g. 1080p -> height=1080)
+                    vf_filters.append(f"scale=-2:{target_res}")
+                else:
+                    # Portrait: target_res is width (e.g. 1080p vertical -> width=1080)
+                    vf_filters.append(f"scale={target_res}:-2")
+            else:
+                # Fallback if original dimensions are unknown
+                vf_filters.append(f"scale=-2:{target_res}")
+        elif "qsv" in pure_codec:
+            # HW codecs (like QSV) heavily require even pixel dimensions (mod-2)
+            vf_filters.append("scale=trunc(iw/2)*2:trunc(ih/2)*2")
+
+        file_name_stem = file_path.stem
+        original_ext = file_path.suffix.lstrip(".")
+        
+        out_ext = original_ext
+        if self.export_format != "Original" and self.export_format:
+            out_ext = self.export_format.lower().replace(".", "")
+        
+        # FFV1 only works in MKV/AVI containers
+        if is_lossless and out_ext not in ["mkv", "avi"]:
+            out_ext = "mkv"
                 
-            output_path = os.path.join(
-                g.output_dir, f"{file_name_without_ext}-compressed.{out_ext}"
-            )
-            print(f"New bitrate: {bitrate_str}")
+        if self.custom_name:
+            out_name = self.custom_name
+            if len(g.queue) > 1:
+                out_name = f"{self.custom_name}_{len(g.completed) + 1}"
+            output_path = Path(g.output_dir) / f"{out_name}.{out_ext}"
+        else:
+            output_path = Path(g.output_dir) / f"{file_name_stem}-compressed.{out_ext}"
+
+        # Hardware encoders and FFV1: single-pass
+        # Software encoders (libx264, libx265, etc.): 2-pass for better quality
+        if is_hw_encoder or is_lossless:
+            num_passes = 1
+        else:
+            num_passes = 2
+
+        for i in range(num_passes):
+            total_steps = len(g.queue) * num_passes
+            current_step = (len(g.completed) * num_passes) + i
+            base_percentage = (current_step / total_steps) * 100
+            self.update_progress.emit(int(base_percentage))
+            
+            encoder_mode = "Quality (1-pass)" if is_hw_encoder else ("Lossless" if is_lossless else f"Pass {i + 1}/2")
+            status_msg = f"\n[Compression Status]\nFile: {file_name}\nQueue: {len(g.completed) + 1}/{len(g.queue)}\nMode: {encoder_mode}\nTarget Size: {self.target_size_mb}MB\nBitrate: {video_rate}k\nEncoder: {self.codec}\nDepth: {orig_depth} -> {target_depth}\n"
+
+            bitrate_str = f"{video_rate}k"
+
             print(status_msg)
 
-            # Base command arguments
-            pure_codec = self.codec.split(" ")[0]
-            cmd_args = [
-                f'"{g.ffmpeg_path}"',
-                f'-i "{file_path}"',
-                "-y",
-                f"-b:v {bitrate_str}",
-                f"-c:v {pure_codec}"
-            ]
+            cmd = [str(g.ffmpeg_path), "-y", "-i", str(file_path)]
 
-            # VAAPI specific flags for Linux
-            if "vaapi" in pure_codec and platform.system() == "Linux":
-                # Add hwaccel flags for VAAPI
-                vaapi_flags = [
-                    "-hwaccel vaapi",
-                    "-hwaccel_output_format vaapi",
-                    "-vaapi_device /dev/dri/renderD128"
-                ]
-                for flag in reversed(vaapi_flags):
-                    cmd_args.insert(1, flag)
-
-            # Handle bit-depth variants for NVENC
-            if "(Modern 10-bit)" in self.codec:
-                cmd_args.append("-pix_fmt p010le")
-            elif "(Standard 8-bit)" in self.codec:
-                cmd_args.append("-pix_fmt yuv420p")
-            elif "nvenc" in pure_codec and "10" in pix_fmt:
-                # Fallback for old code paths or other nvenc uses
-                print(f"Detected 10-bit input ({pix_fmt}) with NVENC. Forcing 8-bit output for compatibility.")
-                cmd_args.append("-pix_fmt yuv420p")
-
-            if i == 0:
-                cmd_args.extend(["-an", "-pass", "1", "-f", "mp4", "TEMP"])
+            if is_lossless:
+                # FFV1: lossless codec, no bitrate control needed
+                cmd.extend(["-c:v", "ffv1", "-level", "3", "-slicecrc", "1"])
+            elif is_hw_encoder:
+                # Hardware encoders: single-pass with target bitrate
+                cmd.extend(["-c:v", pure_codec, "-b:v", bitrate_str])
+                
+                # Add quality-based encoding hints for each HW family
+                if "qsv" in pure_codec:
+                    cmd.extend(["-preset", "medium"])
+                elif "nvenc" in pure_codec:
+                    cmd.extend(["-preset", "p4", "-tune", "hq"])
+                elif "amf" in pure_codec:
+                    cmd.extend(["-quality", "balanced"])
             else:
-                # Audio handling for pass 2
-                if self.audio_codec == "none":
-                    cmd_args.append("-an")
-                elif self.audio_codec == "copy":
-                    cmd_args.extend(["-c:a", "copy"])
-                elif self.audio_codec == "aac":
-                    cmd_args.extend(["-c:a", "aac", "-b:a", "192k"])
-                elif self.audio_codec == "mp3":
-                    cmd_args.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
-                elif self.audio_codec == "opus":
-                    cmd_args.extend(["-c:a", "libopus", "-b:a", "128k"])
-                elif self.audio_codec == "flac":
-                    cmd_args.extend(["-c:a", "flac"])
-                else:
-                    cmd_args.extend(["-c:a", "copy"])
-                cmd_args.extend(["-pass", "2", f'"{output_path}"'])
+                # Software encoders: 2-pass encoding
+                cmd.extend(["-b:v", bitrate_str, "-c:v", pure_codec])
 
-            cmd = " ".join(cmd_args)
-            print(f"Running command: {cmd}")
+            if "vaapi" in pure_codec and platform.system() == "Linux":
+                cmd[1:1] = ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-vaapi_device", "/dev/dri/renderD128"]
+
+            if vf_filters:
+                cmd.extend(["-vf", ",".join(vf_filters)])
+
+            # Pixel format handling
+            if not is_lossless:
+                match self.codec:
+                    case c if "(Modern 10-bit)" in c:
+                        cmd.extend(["-pix_fmt", "p010le"])
+                    case c if "(Standard 8-bit)" in c:
+                        fmt = "nv12" if "qsv" in pure_codec else "yuv420p"
+                        cmd.extend(["-pix_fmt", fmt])
+
+            if is_hw_encoder or is_lossless:
+                # Single-pass: output directly
+                # Audio handling
+                match self.audio_codec:
+                    case "none": cmd.append("-an")
+                    case "copy": cmd.extend(["-c:a", "copy"])
+                    case "aac": cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                    case "mp3": cmd.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
+                    case "opus": cmd.extend(["-c:a", "libopus", "-b:a", "128k"])
+                    case "flac": cmd.extend(["-c:a", "flac"])
+                    case _: cmd.extend(["-c:a", "copy"])
+                cmd.append(str(output_path))
+            else:
+                passlogfile_path = str(Path(g.output_dir) / f"{file_name_stem}_passlog")
+                cmd.extend(["-passlogfile", passlogfile_path])
+                # 2-pass encoding for software codecs
+                if i == 0:
+                    cmd.extend(["-an", "-pass", "1", "-f", "null", os.devnull])
+                else:
+                    match self.audio_codec:
+                        case "none": cmd.append("-an")
+                        case "copy": cmd.extend(["-c:a", "copy"])
+                        case "aac": cmd.extend(["-c:a", "aac", "-b:a", "192k"])
+                        case "mp3": cmd.extend(["-c:a", "libmp3lame", "-b:a", "192k"])
+                        case "opus": cmd.extend(["-c:a", "libopus", "-b:a", "128k"])
+                        case "flac": cmd.extend(["-c:a", "flac"])
+                        case _: cmd.extend(["-c:a", "copy"])
+                    
+                    cmd.extend(["-pass", "2", str(output_path)])
+
+            cmd_str = ' '.join(f'"{c}"' if ' ' in str(c) else str(c) for c in cmd)
+            print(f"FULL CMD: {cmd_str}")
             self.update_log.emit(status_msg)
-            self.process = subprocess.check_call(cmd, shell=True)
+            
+            creation_flags = 0x08000000 if platform.system() == "Windows" else 0
+            self.process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                universal_newlines=True, 
+                creationflags=creation_flags
+            )
+            
+            last_lines = []
+            if self.process.stdout:
+                for line in self.process.stdout:
+                    if not g.compressing:
+                        self.process.terminate()
+                        break
+                    line_stripped = line.strip()
+                    if line_stripped:
+                        last_lines.append(line_stripped)
+                        if len(last_lines) > 10:
+                            last_lines.pop(0)
+                    
+                    # Parse time=... for real-time progress
+                    match = re.search(r"time=(\d+):(\d+):(\d+\.\d+)", line)
+                    if match and v_len > 0:
+                        h, m, s = map(float, match.groups())
+                        current_time = h * 3600 + m * 60 + s
+                        pass_progress = min(1.0, current_time / v_len)
+                        current_percentage = base_percentage + (pass_progress * 100 / total_steps)
+                        self.update_progress.emit(int(current_percentage))
+                        
+            self.process.wait()
+            if self.process.returncode != 0:
+                error_detail = "\n".join(last_lines[-5:]) if last_lines else "Unknown error"
+                print(f"FFmpeg ERROR output:\n{error_detail}")
+                raise Exception(f"FFmpeg error: {error_detail}")
+            
+            # Clean up pass log files after successful pass 2
+            if not is_hw_encoder and not is_lossless and i == 1:
+                try:
+                    for suffix in [".log", ".log.mbtree"]:
+                        p = Path(f"{passlogfile_path}-0{suffix}")
+                        if p.exists():
+                            p.unlink()
+                except Exception as e:
+                    print(f"Error cleaning up passlogs: {e}")
 
     def run(self):
         g.completed = []
-
         try:
             for file_path in g.queue:
                 if not g.compressing:
@@ -479,13 +657,12 @@ Depth: {orig_depth} -> {target_depth}
                     self.run_pass(file_path)
                 g.completed.append(file_path)
 
-            msg = (
-                f"Compressed {len(g.completed)} video(s)!" if g.compressing else "Aborted!"
-            )
+            msg = f"Compressed {len(g.completed)} video(s)!" if g.compressing else "Aborted!"
         except Exception as e:
             error_text = str(e)
-            if any(term in error_text.lower() for term in ["encoder", "codec", "not implemented", "invalid argument"]):
-                self.error_msg.emit("Codec no compatible")
+            # Show the actual FFmpeg error to the user for proper diagnosis
+            display_error = error_text[:200] if len(error_text) > 200 else error_text
+            self.error_msg.emit(f"❌ {display_error}")
             
             msg = f"Error during compression: {e}"
             print(msg)
