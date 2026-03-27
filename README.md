@@ -1,83 +1,88 @@
-# DRAGGY ENCODER v1
+# 🚀 THE-DRAGGY-ENCODER v1.0.0
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.12+](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![UI: PySide6](https://img.shields.io/badge/UI-PySide6-green.svg)](https://doc.qt.io/qtforpython-6/)
 
-A professional video compressor with full hardware acceleration support.
+**The-Draggy-Encoder** is a powerful, sleek, and high-performance video compressor designed for enthusiasts who want maximum quality with minimum effort. It handles hardware acceleration across all major platforms and features a modern tray-integrated interface.
 
 ![Preview](preview.png)
 
-## Features
+## ✨ Key Features
 
-- 🎯 **Target any file size** — Set your desired output size in MB
-- 🖥️ **Hardware acceleration** — NVIDIA NVENC, Intel QSV, AMD AMF, Linux VAAPI
-- 🔍 **Smart hardware probing** — Auto-detects what your GPU actually supports
-- 📂 **Drag & Drop** — Drop video files directly onto the window
-- 🎬 **Multiple formats** — MP4, MKV, AVI, MOV, WEBM, FLV, M4V
-- 🔄 **Export conversion** — Change container format on the fly
-- 📊 **Two-pass encoding** — Optimal quality at target size
-- 🖱️ **Device selection** — Choose between CPU, iGPU (Intel/AMD), or Dedicated GPU
-- 🎨 **10-bit support** — Separate 8-bit and 10-bit NVENC variants
-- 🔔 **Desktop notifications** — Get notified when encoding finishes
-- 💾 **Settings persistence** — Remembers your preferences
-- 🐧 **Cross-platform** — Windows & Linux
+- 🎯 **Target-Size Encoding** — Set your desired output size in MB and let the 2-pass engine do the magic.
+- ⚡ **Full Hardware Acceleration** — Native support for:
+  - **NVIDIA** (NVENC H.264, HEVC, AV1)
+  - **Intel** (QSV H.264, HEVC, AV1)
+  - **AMD** (AMF H.264, HEVC, AV1)
+  - **Linux VAAPI** (Cross-vendor)
+- 📥 **Drag & Drop** — Select hundreds of files at once by simply dropping them onto the window.
+- 📐 **Resolution Scaling** — Smart resolution downscaling (4K, 1440p, 1080p, 720p, etc.) while preserving aspect ratios.
+- 🎧 **Audio-Only Mode** — Automatically switches to audio compression (MP3, FLAC, AAC) when audio files are dropped.
+- 📥 **System Tray (Background Mode)** — Minimize to the tray to keep your workspace clean while encoding runs in the background.
+- 🔔 **Desktop Notifications** — Instant alerts when your queue finishes.
+- 📦 **Dynamic Exporting** — Change container formats (MP4, MKV, AVI, MOV, WEBM) with codec compatibility checks.
+- 💾 **Smart Settings** — Persistent configuration that remembers your favorite devices and encoders.
 
-## Prerequisites
+## 🛠️ Prerequisites
 
-- **FFmpeg**: The application requires FFmpeg. On first launch, it will attempt to download it automatically if not found.
-- **Hardware**: For hardware acceleration, ensure you have the latest drivers for your GPU (NVIDIA, Intel, or AMD).
+- **FFmpeg**: Handled automatically. The app downloads the appropriate binaries on first run if they are missing.
+- **Drivers**: For hardware acceleration, ensure your GPU drivers (NVIDIA, Intel, or AMD) are up-to-date.
 
-## Download
+## 📥 Get Started
 
-Go to the [Releases](../../releases) page and download:
+Go to the [Releases](../../releases) page to download the latest version for your OS:
 
-| Platform | File | How to install |
-|----------|------|----------------|
-| **Windows** | `DraggyEncoder_v1_Setup.exe` | Run the installer |
-| **Linux** | `DraggyEncoder-v1-x86_64.AppImage` | `chmod +x` and run |
+| OS | Format | Installation |
+|---|---|---|
+| **Windows** | `.exe` | Standard Installer (created with Inno Setup) |
+| **Linux** | `.AppImage` | Portable AppImage (chmod +x and run) |
 
-> **Note**: FFmpeg is managed automatically by the application.
+## 💻 Build from Source
 
-## Build from Source
-
-### Requirements
+### Dependencies
 - Python 3.12+
-- pip
+- FFmpeg (If not using the auto-downloader)
 
-### Steps
-
+### Setup
 ```bash
+# Clone the repository
 git clone https://github.com/thedevil4k/THE-DRAGGY-ENCODER.git
 cd THE-DRAGGY-ENCODER
+
+# Setup environment
 python -m venv .venv
-# Windows
-.venv\Scripts\activate
-# Linux
-source .venv/bin/activate
+# Windows: .venv\Scripts\activate | Linux: source .venv/bin/activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Run the app
 python main.py
 ```
 
-### Build Installer (Windows)
-
+### Packaging
 ```bash
-pip install pyinstaller
+# Generate the executable
 pyinstaller draggy_encoder.spec
-# Then use Inno Setup to compile installer.iss
 ```
 
-## Tech Stack
+## 🏗️ Technology Stack
 
-- **Python 3.12** + **PySide6** (Qt)
-- **FFmpeg** for video encoding
-- **PyInstaller** for packaging
-- **Inno Setup** (Windows installer)
-- **AppImage** (Linux portable)
+- **GUI**: PySide6 (Qt)
+- **Engine**: FFmpeg + FFprobe
+- **OS Integration**: ctypes (Windows AppUserModelID), QSystemTrayIcon
+- **Logging**: Loguru & Custom UI Log
+- **Packaging**: PyInstaller & Inno Setup
 
-## License
+## 🤝 Contributing
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Contributions are welcome! Please check [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## 📄 License
+
+Distributed under the **MIT License**. See `LICENSE` for more information.
 
 ---
 
-Made with ❤️ by [thedevil4k](https://github.com/thedevil4k)
+*Made with ❤️ by [thedevil4k](https://github.com/thedevil4k)*

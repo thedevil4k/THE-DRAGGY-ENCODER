@@ -2,6 +2,7 @@ PySide6==6.7.1
 requests==2.32.3
 psutil==6.1.0
 notify-py==0.3.43
-loguru==0.6.0
+loguru==0.7.2
 colorama==0.4.6
-pyinstaller
+pyinstaller==6.6.0
+pathlib

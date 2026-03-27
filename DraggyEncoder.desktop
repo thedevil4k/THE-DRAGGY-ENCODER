@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Draggy Encoder
+Exec=DraggyEncoder
+Icon=pyEncoder
+Type=Application
+Categories=AudioVideo;Video;Recorder;
+Comment=Draggy Encoder - Simple Video Compressor
+Terminal=false

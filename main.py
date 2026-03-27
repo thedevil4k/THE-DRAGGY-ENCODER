@@ -24,9 +24,12 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QSpacerItem,
     QSizePolicy,
+    QSystemTrayIcon,
+    QMenu,
 )
-from PySide6.QtGui import QIcon
-from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon, QAction
+from PySide6.QtCore import Qt, QEvent
+import ctypes
 from src.styles import (
     WINDOW,
     GLOBAL_STYLE,
@@ -102,6 +105,7 @@ class Window(QWidget):
     def __init__(self, hw_data=None) -> None:
         print("Window __init__ starting...")
         super().__init__()
+        self._force_close = False
         self.is_audio_only = False
         self.label_log = None
         self.progress_bar = None
@@ -132,6 +136,59 @@ class Window(QWidget):
 
         self.setup_ui()
         self.verify_ffmpeg()
+        self.setup_tray_icon()
+
+    def setup_tray_icon(self):
+        """Setup the system tray icon and its context menu."""
+        icon_path = Path(g.res_dir) / "icon.ico"
+        if not icon_path.exists():
+            return
+
+        self.tray_icon = QSystemTrayIcon(self)
+        self.tray_icon.setIcon(QIcon(str(icon_path)))
+        self.tray_icon.setToolTip(g.TITLE)
+
+        # Create tray menu
+        self.tray_menu = QMenu()
+        restore_action = QAction("Mostrar", self)
+        restore_action.triggered.connect(self.restore_window)
+        
+        quit_action = QAction("Salir", self)
+        quit_action.triggered.connect(self.quit_application)
+
+        self.tray_menu.addAction(restore_action)
+        self.tray_menu.addSeparator()
+        self.tray_menu.addAction(quit_action)
+
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self.tray_icon_activated)
+        self.tray_icon.show()
+
+    def tray_icon_activated(self, reason):
+        """Handle tray icon click activation."""
+        if reason == QSystemTrayIcon.Trigger:  # Single click
+            self.restore_window()
+
+    def restore_window(self):
+        """Restore window from tray."""
+        self.show()
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def quit_application(self):
+        """Force quit the application from tray menu."""
+        self._force_close = True
+        self.close()
+
+    def changeEvent(self, event):
+        """Override changeEvent to detect minimization and hide to tray."""
+        if event.type() == QEvent.WindowStateChange:
+            if self.isMinimized():
+                # On Windows, we hide the window so it doesn't stay in the taskbar
+                self.hide()
+                event.accept()
+        super().changeEvent(event)
 
     def setup_ui(self):
         # Initialize log and progress first to avoid AttributeErrors if methods call them during setup
@@ -364,19 +421,35 @@ class Window(QWidget):
             self.combo_audio.setCurrentIndex(audio_index)
 
     def closeEvent(self, event):
-        # Save settings when closing
-        self.settings["target_size"] = float(self.edit_size.text())
-        self.settings["resolution"] = self.combo_resolution.currentText()
-        self.settings["device"] = self.combo_device.currentText()
-        self.settings["codec"] = self.combo_codec.currentText()
-        self.settings["audio"] = self.combo_audio.currentText()
-        save_settings(self.settings)
+        """Override closeEvent to minimize to tray instead of quitting."""
+        if not self._force_close:
+            # Save settings even when minimizing to tray (just in case)
+            self.save_current_settings()
+            
+            self.hide()
+            event.ignore()
+            return
+            
+        # Actual cleanup when quitting
+        self.save_current_settings()
         kill_ffmpeg()
 
         if os.path.exists(os.path.join(g.root_dir, "TEMP")):
             os.remove(os.path.join(g.root_dir, "TEMP"))
 
         event.accept()
+
+    def save_current_settings(self):
+        """Save settings to the config file."""
+        try:
+            self.settings["target_size"] = float(self.edit_size.text())
+            self.settings["resolution"] = self.combo_resolution.currentText()
+            self.settings["device"] = self.combo_device.currentText()
+            self.settings["codec"] = self.combo_codec.currentText()
+            self.settings["audio"] = self.combo_audio.currentText()
+            save_settings(self.settings)
+        except Exception as e:
+            print(f"Error while saving settings: {e}")
 
     def reset(self, preserve_queue=False):
         g.compressing = False
@@ -712,6 +785,11 @@ def start_main_window(hw_data):
     window.show()
 
 if __name__ == "__main__":
+    if platform.system() == "Windows":
+        # Fix for taskbar icon: Set a unique AppUserModelID
+        myappid = u"thedevil4k.draggyencoder.v1" 
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+
     app = QApplication(sys.argv)
     
     # Initialize directories and paths FIRST
