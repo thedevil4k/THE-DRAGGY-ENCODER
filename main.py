@@ -7,7 +7,6 @@ import psutil
 from pathlib import Path
 import src.globals as g
 from notifypy import Notify
-from src.download import DownloadThread
 from src.thread import CompressionThread, get_video_metadata, human_readable_size
 from src.loader import LoadingWindow
 from PySide6.QtWidgets import (
@@ -69,18 +68,31 @@ window = None
 
 
 def load_settings() -> dict:
-    settings_path = Path(g.res_dir) / "settings.json"
+    # Try loading from writable AppData folder first
+    base_data_dir = os.path.join(os.getenv("APPDATA", ""), "DraggyEncoder") if platform.system() == "Windows" else os.path.expanduser("~/.draggy_encoder")
+    settings_path = Path(base_data_dir) / "settings.json"
+    
     try:
         if settings_path.exists():
             return json.loads(settings_path.read_text())
+        
+        # Fallback to default settings in res_dir
+        default_settings_path = Path(g.res_dir) / "settings.json"
+        if default_settings_path.exists():
+            return json.loads(default_settings_path.read_text())
+            
     except Exception as e:
         print(f"Error loading settings: {e}")
     return g.DEFAULT_SETTINGS
 
 
 def save_settings(settings):
-    settings_path = Path(g.res_dir) / "settings.json"
+    base_data_dir = os.path.join(os.getenv("APPDATA", ""), "DraggyEncoder") if platform.system() == "Windows" else os.path.expanduser("~/.draggy_encoder")
+    settings_path = Path(base_data_dir) / "settings.json"
+    
     try:
+        # Ensure base directory exists
+        os.makedirs(base_data_dir, exist_ok=True)
         settings_path.write_text(json.dumps(settings, indent=4))
     except Exception as e:
         print(f"Error saving settings: {e}")
@@ -135,7 +147,6 @@ class Window(QWidget):
         self.setStyleSheet(GLOBAL_STYLE)
 
         self.setup_ui()
-        self.verify_ffmpeg()
         self.setup_tray_icon()
 
     def setup_tray_icon(self):
@@ -204,9 +215,9 @@ class Window(QWidget):
         self.layout_top_buttons = QHBoxLayout()
         self.button_select = QPushButton("Select Videos")
         self.button_select.clicked.connect(self.select_videos)
-        self.button_select.setEnabled(False)
+        self.button_select.setEnabled(True)
         self.button_select.setFixedHeight(50)
-        self.button_select.setStyleSheet(BUTTON_DISABLED_STYLE)
+        self.button_select.setStyleSheet(BUTTON_SELECT_STYLE)
 
         self.button_output = QPushButton("📂 Output Folder")
         self.button_output.clicked.connect(self.select_output_dir)
@@ -485,24 +496,6 @@ class Window(QWidget):
         self.update_progress(0)
 
 
-    def verify_ffmpeg(self):
-        if os.path.exists(g.ffmpeg_path) and os.path.exists(g.ffprobe_path):
-            g.ffmpeg_installed = True
-            self.reset()
-        else:
-            self.download_thread = DownloadThread()
-            if self.download_thread:
-                self.download_thread.installed.connect(self.installed)
-                self.download_thread.update_log.connect(self.update_log)
-                self.download_thread.update_progress.connect(self.update_progress)
-                self.download_thread.start()
-
-        # Show detected system and hardware
-        os_info = f"{platform.system()} {platform.release()}"
-        hw = self.hw_info
-        gpus_str = "\n".join([f"- {gpu}" for gpu in hw["gpus"]])
-        msg = f"System: {os_info}\nCPU: {hw['cpu']}\nGPUs Detected:\n{gpus_str}\n\n{g.READY_TEXT}"
-        self.update_log(msg)
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -737,20 +730,6 @@ class Window(QWidget):
         if self.progress_bar:
             self.progress_bar.setValue(progress_percentage)
 
-    def installed(self):
-        g.ffmpeg_installed = True
-        if platform.system() == "Windows":
-            g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg.exe")
-            g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe.exe")
-        else:
-            g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg")
-            g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe")
-        self.reset()
-        n = Notify()
-        n.title = "FFmpeg installed!"
-        n.message = "You can now compress your videos."
-        n.icon = os.path.join(g.res_dir, "icon.ico")
-        n.send()
 
     def completed(self, aborted=False):
         g.compressing = False

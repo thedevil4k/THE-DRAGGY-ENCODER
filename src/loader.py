@@ -36,7 +36,30 @@ class LoadingThread(QThread):
 
     def run(self):
         from src.thread import is_encoder_supported
+        from src.download import download_ffmpeg_func, install_ffmpeg_func
         
+        # 0. Check for FFmpeg installation
+        if not os.path.exists(g.ffmpeg_path) or not os.path.exists(g.ffprobe_path):
+            self.status.emit("FFmpeg not found. Downloading...")
+            self.tag_added.emit("FFmpeg: Downloading...", "#FAB387")
+            
+            # Use standalone functions with signals as callbacks
+            if download_ffmpeg_func(self.progress.emit, self.status.emit):
+                if install_ffmpeg_func(self.status.emit):
+                    self.tag_added.emit("FFmpeg: Installed", "#A6E3A1")
+                    g.ffmpeg_installed = True
+                    # Re-verify paths just in case
+                    if platform.system() == "Windows":
+                        g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg.exe")
+                        g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe.exe")
+                    else:
+                        g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg")
+                        g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe")
+                else:
+                    self.tag_added.emit("FFmpeg: Install Failed", "#F38BA8")
+            else:
+                self.tag_added.emit("FFmpeg: Download Failed", "#F38BA8")
+
         # Explicit initialization to help linter
         hw_info_data = {"cpu": "Unknown", "gpus": []}
         detected_encoders = []
@@ -78,7 +101,7 @@ class LoadingThread(QThread):
         # 2. Get encoders from binary
         all_video_encoders = []
         if not os.path.exists(g.ffmpeg_path):
-            self.status.emit("FFmpeg not found. Skipping codec tests...")
+            self.status.emit("FFmpeg still missing. skipping tests...")
             self.tag_added.emit("FFmpeg: MISSING", "#F38BA8")
             self.progress.emit(35)
         else:
