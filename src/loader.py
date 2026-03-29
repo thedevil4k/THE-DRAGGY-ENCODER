@@ -7,6 +7,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread, Signal, QPropertyAnimation, QEasingCurve
 from src.styles import GLOBAL_STYLE, PROGRESS_BAR_STYLE
+from PySide6.QtGui import QIcon
+from pathlib import Path
 import src.globals as g
 
 class Tag(QFrame):
@@ -182,6 +184,11 @@ class LoadingWindow(QWidget):
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint)
         self.setFixedSize(350, 450)
         self.setStyleSheet(GLOBAL_STYLE)
+        
+        # Icon
+        icon_path = Path(g.res_dir) / "icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
         
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(20, 20, 20, 20)

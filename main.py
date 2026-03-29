@@ -165,10 +165,16 @@ class Window(QWidget):
 
     def setup_tray_icon(self):
         """Setup the system tray icon and its context menu."""
-        icon_path = Path(g.res_dir) / "icon.ico"
-        if not icon_path.exists():
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            print("System tray is not available on this system.")
             return
 
+        icon_path = Path(g.res_dir) / "icon.ico"
+        if not icon_path.exists():
+            print(f"Tray icon not found at: {icon_path}")
+            return
+
+        print(f"Initializing tray icon with: {icon_path}")
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(QIcon(str(icon_path)))
         self.tray_icon.setToolTip(g.TITLE)
@@ -785,9 +791,17 @@ if __name__ == "__main__":
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
 
     app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
     
     # Initialize directories and paths FIRST
     g.verify_directories()
+    
+    icon_path = Path(g.res_dir) / "icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
+        print(f"Application icon set from: {icon_path}")
+    else:
+        print(f"Warning: Icon file not found at {icon_path}")
     
     loader = LoadingWindow()
     loader.finished.connect(start_main_window)

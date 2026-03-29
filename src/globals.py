@@ -25,7 +25,7 @@ def verify_directories():
     
     # Static resources (icons, etc.) stay in the installation folder
     if getattr(sys, "frozen", False):
-        root_dir = os.path.dirname(sys.executable)
+        root_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
     else:
         root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
