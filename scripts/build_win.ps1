@@ -26,10 +26,10 @@ Write-Host "1. Checking Python dependencies..." -ForegroundColor Yellow
 pip install -r requirements.txt pyinstaller
 
 # 2. Run PyInstaller
-Write-Host "2. Running PyInstaller..." -ForegroundColor Yellow
+Write-Host "2. Running PyInstaller via python -m..." -ForegroundColor Yellow
 if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-pyinstaller --clean $SPEC_FILE
+python -m PyInstaller --clean $SPEC_FILE
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: PyInstaller failed." -ForegroundColor Red

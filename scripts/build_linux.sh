@@ -23,9 +23,9 @@ echo "1. Installing Python dependencies..."
 pip install -r requirements.txt pyinstaller
 
 # 2. Run PyInstaller
-echo "2. Running PyInstaller..."
+echo "2. Running PyInstaller via python3 -m..."
 rm -rf dist build
-pyinstaller --clean draggy_encoder.spec
+python3 -m PyInstaller --clean draggy_encoder.spec
 
 if [ ! -d "$DIST_DIR" ]; then
     echo "Error: PyInstaller failed."
