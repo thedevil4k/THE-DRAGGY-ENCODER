@@ -26,6 +26,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
 
+      - name: Debug - List Files
+        run: ls -R
+
       - name: Run Windows Build Script
         shell: pwsh
         run: |
@@ -51,12 +54,15 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm dpkg-dev wget libnotify-bin dbus-x11
+          sudo apt-get install -y rpm dpkg-dev wget libnotify-bin dbus-x11 libegl1 libgl1-mesa-dev libxkbcommon-x11-0 libxcb-cursor0
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller
+
+      - name: Debug - Pip List
+        run: pip list
 
       - name: Run Linux Build Script
         env:

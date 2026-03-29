@@ -18,9 +18,12 @@ echo "Output Directory: $EXTERNAL_OUTPUT"
 mkdir -p "$EXTERNAL_OUTPUT"
 cd "$REPO_ROOT"
 
-# 1. Install dependencies
-echo "1. Installing Python dependencies..."
-pip install -r requirements.txt pyinstaller
+# 1. Skip pip install in script (handled by CI/shell)
+echo "1. Checking environment (PyInstaller)..."
+if ! python3 -m PyInstaller --version >/dev/null 2>&1; then
+    echo "Error: PyInstaller not found. Please run 'pip install pyinstaller' first."
+    exit 1
+fi
 
 # 2. Run PyInstaller
 echo "2. Running PyInstaller via python3 -m..."

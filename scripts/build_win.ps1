@@ -21,9 +21,12 @@ Write-Host "Output Directory: $EXTERNAL_OUTPUT" -ForegroundColor Cyan
 
 if (!(Test-Path $EXTERNAL_OUTPUT)) { New-Item -ItemType Directory -Path $EXTERNAL_OUTPUT }
 
-# 1. Install dependencies
-Write-Host "1. Checking Python dependencies..." -ForegroundColor Yellow
-pip install -r requirements.txt pyinstaller
+# 1. Skip pip install in script (handled by CI/shell)
+Write-Host "1. Checking environment (PyInstaller)..." -ForegroundColor Yellow
+if (-not (Get-Command "pyinstaller" -ErrorAction SilentlyContinue) -and -not (python -m PyInstaller --version)) {
+    Write-Host "Error: PyInstaller not found. Please run 'pip install pyinstaller' first." -ForegroundColor Red
+    exit 1
+}
 
 # 2. Run PyInstaller
 Write-Host "2. Running PyInstaller via python -m..." -ForegroundColor Yellow
