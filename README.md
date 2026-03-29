@@ -63,10 +63,16 @@ python main.py
 ```
 
 ### Packaging
-```bash
-# Generate the executable
-pyinstaller draggy_encoder.spec
-```
+
+Use the following scripts to generate installers and packages for your OS:
+
+**Windows (.exe)**
+- Run `powershell .\scripts\build_win.ps1`
+- Output: `../DRAGGY_RELEASES/`
+
+**Linux (.deb, .rpm, .AppImage)**
+- Run `bash .\scripts\build_linux.sh`
+- Output: `../DRAGGY_RELEASES/`
 
 ## 🏗️ Technology Stack
 
