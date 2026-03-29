@@ -28,7 +28,7 @@ fi
 # 2. Run PyInstaller
 echo "2. Running PyInstaller via python3 -m..."
 rm -rf dist build
-python3 -m PyInstaller --clean draggy_encoder.spec
+python -m PyInstaller -y --clean draggy_encoder.spec
 
 if [ ! -d "$DIST_DIR" ]; then
     echo "Error: PyInstaller failed."

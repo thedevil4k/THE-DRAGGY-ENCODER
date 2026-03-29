@@ -1,5 +1,5 @@
 # Build script for Windows (.exe)
-# Requirements: PyInstaller, Inno Setup 6
+# Requirements: PyInstaller, Inno PySide6>=6.7.0
 
 $APP_NAME = "DraggyEncoder"
 $VERSION = "1"
@@ -32,7 +32,7 @@ if (-not (Get-Command "pyinstaller" -ErrorAction SilentlyContinue) -and -not (py
 Write-Host "2. Running PyInstaller via python -m..." -ForegroundColor Yellow
 if (Test-Path "dist") { Remove-Item -Recurse -Force "dist" }
 if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
-python -m PyInstaller --clean $SPEC_FILE
+python -m PyInstaller -y --clean $SPEC_FILE
 
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Error: PyInstaller failed." -ForegroundColor Red
