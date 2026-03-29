@@ -99,9 +99,23 @@ def save_settings(settings):
 
 
 def kill_ffmpeg():
-    for proc in psutil.process_iter():
-        if "ffmpeg" in proc.name():
-            proc.kill()
+    if platform.system() == "Windows":
+        # Fast kill using taskkill
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ffmpeg.exe", "/T"], 
+                           creationflags=0x08000000, 
+                           stdout=subprocess.DEVNULL, 
+                           stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+    else:
+        # Standard psutil fallback for Linux/other
+        for proc in psutil.process_iter():
+            try:
+                if "ffmpeg" in proc.name().lower():
+                    proc.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                continue
 
 
 def delete_bin():
@@ -188,9 +202,10 @@ class Window(QWidget):
         self.raise_()
 
     def quit_application(self):
-        """Force quit the application from tray menu."""
+        """Force quit the application immediately."""
         self._force_close = True
         self.close()
+        QApplication.quit() # Ensure the event loop stops
 
     def changeEvent(self, event):
         """Override changeEvent to detect minimization and hide to tray."""

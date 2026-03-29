@@ -6,7 +6,7 @@
 
 **The-Draggy-Encoder** is a powerful, sleek, and high-performance video compressor designed for enthusiasts who want maximum quality with minimum effort. It handles hardware acceleration across all major platforms and features a modern tray-integrated interface.
 
-![Preview](preview.png)
+![Preview](res/appdesign.png)
 
 ## ✨ Key Features
 
@@ -16,6 +16,7 @@
   - **Intel** (QSV H.264, HEVC, AV1)
   - **AMD** (AMF H.264, HEVC, AV1)
   - **Linux VAAPI** (Cross-vendor)
+- 🧬 **H.266 (VVC) Ready** — Support for the next-gen Versatile Video Coding via CPU (`libvvenc`).
 - 📥 **Drag & Drop** — Select hundreds of files at once by simply dropping them onto the window.
 - 📐 **Resolution Scaling** — Smart resolution downscaling (4K, 1440p, 1080p, 720p, etc.) while preserving aspect ratios.
 - 🎧 **Audio-Only Mode** — Automatically switches to audio compression (MP3, FLAC, AAC) when audio files are dropped.

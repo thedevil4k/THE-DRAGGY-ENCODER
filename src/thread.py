@@ -509,9 +509,9 @@ class CompressionThread(QThread):
         else:
             output_path = Path(g.output_dir) / f"{file_name_stem}-compressed.{out_ext}"
 
-        # Hardware encoders and FFV1: single-pass
+        # Hardware encoders, FFV1 and H.266 (VVC): single-pass
         # Software encoders (libx264, libx265, etc.): 2-pass for better quality
-        if is_hw_encoder or is_lossless:
+        if is_hw_encoder or is_lossless or pure_codec == "libvvenc":
             num_passes = 1
         else:
             num_passes = 2
@@ -522,14 +522,20 @@ class CompressionThread(QThread):
             base_percentage = (current_step / total_steps) * 100
             self.update_progress.emit(int(base_percentage))
             
-            encoder_mode = "Quality (1-pass)" if is_hw_encoder else ("Lossless" if is_lossless else f"Pass {i + 1}/2")
+            encoder_mode = "Quality (1-pass)" if is_hw_encoder or pure_codec == "libvvenc" else ("Lossless" if is_lossless else f"Pass {i + 1}/2")
             status_msg = f"\n[Compression Status]\nFile: {file_name}\nQueue: {len(g.completed) + 1}/{len(g.queue)}\nMode: {encoder_mode}\nTarget Size: {self.target_size_mb}MB\nBitrate: {video_rate}k\nEncoder: {self.codec}\nDepth: {orig_depth} -> {target_depth}\n"
 
             bitrate_str = f"{video_rate}k"
 
             print(status_msg)
 
-            cmd = [str(g.ffmpeg_path), "-y", "-i", str(file_path)]
+            cmd = [str(g.ffmpeg_path), "-y"]
+            
+            # libvvenc often requires experimental flag
+            if pure_codec == "libvvenc":
+                cmd.extend(["-strict", "experimental"])
+                
+            cmd.extend(["-i", str(file_path)])
 
             if is_lossless:
                 # FFV1: lossless codec, no bitrate control needed

@@ -139,7 +139,7 @@ class LoadingThread(QThread):
             "h264_amf", "hevc_amf", "av1_amf",
             "h264_qsv", "hevc_qsv", "av1_qsv",
             "h264_vaapi", "hevc_vaapi", "av1_vaapi",
-            "libx264", "libx265", "libsvtav1", "ffv1"
+            "libx264", "libx265", "libsvtav1", "libaom-av1", "libvvenc", "ffv1"
         ]
         
         total = len(hardware_priority)
