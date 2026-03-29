@@ -9,12 +9,14 @@ VERSION="1"
 DIST_DIR="dist/DraggyEncoder"
 ICON_PATH="res/pyEncoder.png"
 DESKTOP_FILE="DraggyEncoder.desktop"
-EXTERNAL_OUTPUT="$(realpath "$(dirname "$0")/../../DRAGGY_RELEASES")"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+EXTERNAL_OUTPUT="$REPO_ROOT/DRAGGY_RELEASES"
 
 echo "--- Starting Linux Build (v$VERSION) ---"
 echo "Output Directory: $EXTERNAL_OUTPUT"
 
 mkdir -p "$EXTERNAL_OUTPUT"
+cd "$REPO_ROOT"
 
 # 1. Install dependencies
 echo "1. Installing Python dependencies..."

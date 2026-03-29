@@ -5,8 +5,16 @@ $APP_NAME = "DraggyEncoder"
 $VERSION = "1"
 $SPEC_FILE = "draggy_encoder.spec"
 $ISS_FILE = "installer.iss"
-$INNO_SETUP_PATH = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-$EXTERNAL_OUTPUT = Join-Path (Get-Item $PSScriptRoot).Parent.Parent.FullName "DRAGGY_RELEASES"
+
+# Find ISCC in PATH or use default
+$INNO_SETUP_PATH = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+if (-not $INNO_SETUP_PATH) {
+    $INNO_SETUP_PATH = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+}
+
+# Ensure output dir is relative to repo root
+$REPO_ROOT = (Get-Item $PSScriptRoot).Parent.FullName
+$EXTERNAL_OUTPUT = Join-Path $REPO_ROOT "DRAGGY_RELEASES"
 
 Write-Host "--- Starting Windows Build (v$VERSION) ---" -ForegroundColor Cyan
 Write-Host "Output Directory: $EXTERNAL_OUTPUT" -ForegroundColor Cyan

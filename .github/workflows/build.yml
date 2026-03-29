@@ -32,7 +32,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: DraggyEncoder-Windows-Installer
-          path: ../DRAGGY_RELEASES/*.exe
+          path: DRAGGY_RELEASES/*.exe
 
   build-linux:
     runs-on: ubuntu-latest
@@ -48,7 +48,7 @@ jobs:
       - name: Install System Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y rpm dpkg-dev wget
+          sudo apt-get install -y rpm dpkg-dev wget libnotify-bin dbus-x11
 
       - name: Install Python dependencies
         run: |
@@ -68,9 +68,9 @@ jobs:
         with:
           name: DraggyEncoder-Linux-Packages
           path: |
-            ../DRAGGY_RELEASES/*.AppImage
-            ../DRAGGY_RELEASES/*.deb
-            ../DRAGGY_RELEASES/*.rpm
+            DRAGGY_RELEASES/*.AppImage
+            DRAGGY_RELEASES/*.deb
+            DRAGGY_RELEASES/*.rpm
 
   release:
     needs: [build-windows, build-linux]
