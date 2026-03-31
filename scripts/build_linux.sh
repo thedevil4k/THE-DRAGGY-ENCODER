@@ -55,7 +55,10 @@ if command -v dpkg-deb >/dev/null 2>&1; then
     mkdir -p "$DEB_DIR/DEBIAN"
 
     # Copy files
-    cp -r "$DIST_DIR"/* "$DEB_DIR/usr/bin/"
+    mkdir -p "$DEB_DIR/opt/DraggyEncoder"
+    cp -r "$DIST_DIR"/* "$DEB_DIR/opt/DraggyEncoder/"
+    ln -s /opt/DraggyEncoder/DraggyEncoder "$DEB_DIR/usr/bin/DraggyEncoder"
+
     cp "$DESKTOP_FILE" "$DEB_DIR/usr/share/applications/"
     cp "$ICON_PATH" "$DEB_DIR/usr/share/icons/hicolor/256x256/apps/DraggyEncoder.png"
 
@@ -86,6 +89,9 @@ if command -v rpmbuild >/dev/null 2>&1; then
     
     # Create SPEC file
     cat << EOF > "$APP_NAME.spec"
+%define _build_id_links none
+%define debug_package %{nil}
+
 Name:           draggy-encoder
 Version:        1.0.0
 Release:        1%{?dist}
@@ -93,21 +99,27 @@ Summary:        Powerful and sleek video compressor
 License:        MIT
 URL:            https://github.com/thedevil4k/THE-DRAGGY-ENCODER
 Requires:       ffmpeg
+AutoReqProv:    no
 
 %description
 Sleek and high-performance video compressor designed for enthusiasts.
 
 %install
 rm -rf %{buildroot}
+mkdir -p %{buildroot}/opt/DraggyEncoder
 mkdir -p %{buildroot}/usr/bin
 mkdir -p %{buildroot}/usr/share/applications
 mkdir -p %{buildroot}/usr/share/icons/hicolor/256x256/apps
-cp -r $(pwd)/$DIST_DIR/* %{buildroot}/usr/bin/
+
+cp -r $(pwd)/$DIST_DIR/* %{buildroot}/opt/DraggyEncoder/
+ln -s /opt/DraggyEncoder/DraggyEncoder %{buildroot}/usr/bin/DraggyEncoder
+
 cp $(pwd)/$DESKTOP_FILE %{buildroot}/usr/share/applications/
 cp $(pwd)/$ICON_PATH %{buildroot}/usr/share/icons/hicolor/256x256/apps/DraggyEncoder.png
 
 %files
-/usr/bin/*
+/opt/DraggyEncoder/
+/usr/bin/DraggyEncoder
 /usr/share/applications/DraggyEncoder.desktop
 /usr/share/icons/hicolor/256x256/apps/DraggyEncoder.png
 
