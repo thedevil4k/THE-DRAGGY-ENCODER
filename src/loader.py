@@ -38,7 +38,12 @@ class LoadingThread(QThread):
 
     def run(self):
         from src.thread import is_encoder_supported
-        from src.download import download_ffmpeg_func, install_ffmpeg_func
+        from src.download import (
+            download_ffmpeg_func, install_ffmpeg_func,
+            download_realesrgan_func, install_realesrgan_func,
+            download_rife_func, install_rife_func,
+            download_deoldify_model,
+        )
         
         # 0. Check for FFmpeg installation
         if not os.path.exists(g.ffmpeg_path) or not os.path.exists(g.ffprobe_path):
@@ -61,6 +66,41 @@ class LoadingThread(QThread):
                     self.tag_added.emit("FFmpeg: Install Failed", "#F38BA8")
             else:
                 self.tag_added.emit("FFmpeg: Download Failed", "#F38BA8")
+
+        # 0b. Download AI tools if missing
+        if not os.path.exists(g.realesrgan_path):
+            self.status.emit("Downloading Real-ESRGAN...")
+            self.tag_added.emit("Real-ESRGAN: Downloading...", "#FAB387")
+            if download_realesrgan_func(self.progress.emit, self.status.emit):
+                if install_realesrgan_func(self.status.emit):
+                    self.tag_added.emit("Real-ESRGAN: Installed", "#A6E3A1")
+                else:
+                    self.tag_added.emit("Real-ESRGAN: Install Failed", "#F38BA8")
+            else:
+                self.tag_added.emit("Real-ESRGAN: Download Failed", "#F38BA8")
+
+        if not os.path.exists(g.rife_path):
+            self.status.emit("Downloading RIFE...")
+            self.tag_added.emit("RIFE: Downloading...", "#FAB387")
+            if download_rife_func(self.progress.emit, self.status.emit):
+                if install_rife_func(self.status.emit):
+                    self.tag_added.emit("RIFE: Installed", "#A6E3A1")
+                else:
+                    self.tag_added.emit("RIFE: Install Failed", "#F38BA8")
+            else:
+                self.tag_added.emit("RIFE: Download Failed", "#F38BA8")
+
+        # 0c. Download DeOldify models if missing
+        from src.ai_tools import get_deoldify_model_path, COLORIZE_MODELS
+        for model_key in COLORIZE_MODELS:
+            if not get_deoldify_model_path(model_key):
+                model_name = COLORIZE_MODELS[model_key]["name"]
+                self.status.emit(f"Downloading {model_name}...")
+                self.tag_added.emit(f"{model_name}: Downloading...", "#FAB387")
+                if download_deoldify_model(self.progress.emit, self.status.emit, model_key=model_key):
+                    self.tag_added.emit(f"{model_name}: Ready", "#A6E3A1")
+                else:
+                    self.tag_added.emit(f"{model_name}: Download Failed", "#F38BA8")
 
         # Explicit initialization to help linter
         hw_info_data = {"cpu": "Unknown", "gpus": []}
@@ -174,6 +214,42 @@ class LoadingThread(QThread):
         self.status.emit("Initialization complete!")
         self.progress.emit(100)
         self.msleep(300)
+
+        # Detect AI tools
+        from src.ai_tools import get_gpu_vram_mb, get_gpu_name, check_onnx_available, get_deoldify_model_path
+        gpu_name = get_gpu_name()
+        gpu_vram = get_gpu_vram_mb()
+
+        if os.path.exists(g.realesrgan_path) and os.path.exists(g.rife_path):
+            self.tag_added.emit("AI Tools: Real-ESRGAN + RIFE", "#A6E3A1")
+        elif os.path.exists(g.realesrgan_path):
+            self.tag_added.emit("AI Tools: Real-ESRGAN only", "#FAB387")
+        elif os.path.exists(g.rife_path):
+            self.tag_added.emit("AI Tools: RIFE only", "#FAB387")
+        else:
+            self.tag_added.emit("AI Tools: Not installed", "#F38BA8")
+
+        # ONNX Runtime status
+        onnx_ok, has_cuda, _ = check_onnx_available()
+        if onnx_ok:
+            backend = "CUDA" if has_cuda else "CPU"
+            self.tag_added.emit(f"ONNX Runtime: {backend}", "#A6E3A1" if has_cuda else "#FAB387")
+        else:
+            self.tag_added.emit("ONNX Runtime: Not installed", "#F38BA8")
+
+        # DeOldify model status
+        from src.ai_tools import COLORIZE_MODELS as _CM
+        for mk in _CM:
+            if get_deoldify_model_path(mk):
+                self.tag_added.emit(f"{_CM[mk]['name']}: Ready", "#A6E3A1")
+            else:
+                self.tag_added.emit(f"{_CM[mk]['name']}: Not found", "#F38BA8")
+
+        if gpu_vram > 0:
+            self.tag_added.emit(f"GPU VRAM: {gpu_vram} MB ({gpu_name[:30]})", "#A6E3A1")
+        else:
+            self.tag_added.emit(f"GPU: {gpu_name[:30]} (VRAM unknown)", "#FAB387")
+
         self.finished_data.emit(results)
 
 class LoadingWindow(QWidget):

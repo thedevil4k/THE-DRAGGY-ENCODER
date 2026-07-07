@@ -345,8 +345,9 @@ class CompressionThread(QThread):
     update_progress = Signal(int)
     error_msg = Signal(str)
     completed = Signal()
+    task_started = Signal(int)
 
-    def __init__(self, target_size_mb, codec, export_format="Original", audio_codec="copy", is_audio_only=False, resolution="Original", custom_name="", parent=None):
+    def __init__(self, target_size_mb, codec, export_format="Original", audio_codec="copy", is_audio_only=False, resolution="Original", custom_name="", ai_config=None, parent=None):
         super().__init__(parent)
         self.target_size_mb = target_size_mb
         self.codec = codec
@@ -355,7 +356,18 @@ class CompressionThread(QThread):
         self.is_audio_only = is_audio_only
         self.resolution = resolution
         self.custom_name = custom_name
+        self.ai_config = ai_config
         self.process = None
+        self._task_queue = None
+
+    @classmethod
+    def from_task_queue(cls, task_list):
+        """Create a CompressionThread from a list of task dicts."""
+        thread = cls(
+            target_size_mb=0, codec="", parent=None
+        )
+        thread._task_queue = list(task_list)
+        return thread
 
     def run_audio_pass(self, file_path):
         import re
@@ -650,30 +662,212 @@ class CompressionThread(QThread):
                 except Exception as e:
                     print(f"Error cleaning up passlogs: {e}")
 
-    def run(self):
-        g.completed = []
+    def run_ai_processing(self, file_path):
+        """Run AI processing pipeline if enabled. Returns path to processed video for encoding."""
+        if not self.ai_config or not self.ai_config.get("mode") or self.ai_config["mode"] == "Disabled":
+            return file_path
+
+        from src.ai_tools import (
+            AIProcessor, UPSCALE_MODELS, INTERPOLATION_MODELS, COLORIZE_MODELS,
+            extract_frames, encode_from_frames, extract_audio,
+            get_video_fps, count_frames, cleanup_temp, mux_audio,
+        )
+
+        file_path = Path(file_path)
+        temp_base = Path(g.output_dir) / ".ai_temp"
+        temp_base.mkdir(exist_ok=True)
+
+        frames_dir = temp_base / "frames"
+        colorized_dir = temp_base / "colorized"
+        upscaled_dir = temp_base / "upscaled"
+        interpolated_dir = temp_base / "interpolated"
+        audio_path = temp_base / "audio.m4a"
+        intermediate_video = temp_base / "intermediate.mp4"
+
+        # Get user-defined order (default: colorize -> upscale -> interpolate)
+        ai_order = self.ai_config.get("ai_order", ["colorize", "upscale", "interpolate"])
+
         try:
-            for file_path in g.queue:
+            # 1. Extract frames
+            self.update_log.emit("[AI] Extracting frames...")
+            extract_frames(file_path, frames_dir)
+
+            original_fps = get_video_fps(file_path)
+            current_frames_dir = frames_dir
+            current_fps = original_fps
+
+            # 2. Run AI steps in user-defined order
+            for step in ai_order:
                 if not g.compressing:
                     break
 
-                if self.is_audio_only:
-                    self.run_audio_pass(file_path)
-                else:
-                    self.run_pass(file_path)
-                g.completed.append(file_path)
+                if step == "colorize" and self.ai_config.get("colorize_enabled"):
+                    render_factor = self.ai_config.get("colorize_render_factor", 256)
+                    colorize_model = self.ai_config.get("colorize_model", "deoldify-artistic")
+                    colorize_device = self.ai_config.get("colorize_device")  # None=auto, -1=cpu, 0,1,2=gpu
+                    self.update_log.emit(f"[AI] Colorizing: {colorize_model} (render_factor={render_factor})")
 
-            msg = f"Compressed {len(g.completed)} video(s)!" if g.compressing else "Aborted!"
+                    from src.ai_tools import DeOldifyProcessor
+                    processor = DeOldifyProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor.colorize_frames(current_frames_dir, colorized_dir, render_factor, model_key=colorize_model, device=colorize_device)
+                    current_frames_dir = colorized_dir
+
+                elif step == "upscale" and "Upscale" in self.ai_config.get("mode", ""):
+                    model_key = self.ai_config.get("upscale_model", "realesrgan-x4plus")
+                    scale = self.ai_config.get("upscale_scale", 4)
+                    upscale_device = self.ai_config.get("upscale_device")  # None=auto, -1=cpu, 0,1,2=gpu
+
+                    model_info = UPSCALE_MODELS.get(model_key, {})
+                    self.update_log.emit(f"[AI] Upscaling: {model_info.get('name', model_key)} x{scale}")
+
+                    processor = AIProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor.upscale_frames(current_frames_dir, upscaled_dir, model_key, scale, gpu_id=upscale_device)
+                    current_frames_dir = upscaled_dir
+
+                elif step == "interpolate" and "Interpolation" in self.ai_config.get("mode", ""):
+                    model_key = self.ai_config.get("interp_model", "rife-v4")
+                    multiplier = self.ai_config.get("interp_multiplier", 2)
+                    interp_device = self.ai_config.get("interp_device")  # None=auto, -1=cpu, 0,1,2=gpu
+
+                    model_info = INTERPOLATION_MODELS.get(model_key, {})
+                    self.update_log.emit(f"[AI] Interpolating: {model_info.get('name', model_key)} x{multiplier}")
+
+                    processor = AIProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor.interpolate_frames(current_frames_dir, interpolated_dir, model_key, multiplier, gpu_id=interp_device)
+                    current_frames_dir = interpolated_dir
+                    current_fps = original_fps * multiplier
+
+            # 5. Extract audio
+            from src.ai_tools import has_audio_stream
+            has_audio = has_audio_stream(file_path)
+            if has_audio:
+                self.update_log.emit("[AI] Extracting audio...")
+                extract_audio(file_path, audio_path)
+            else:
+                self.update_log.emit("[AI] No audio track found, skipping audio extraction.")
+
+            # 6. Encode intermediate video from processed frames
+            self.update_log.emit("[AI] Encoding processed video...")
+            encode_from_frames(current_frames_dir, intermediate_video, current_fps)
+
+            # 7. Mux audio back (if we have audio)
+            if has_audio:
+                final_output = temp_base / "final_with_audio.mp4"
+                mux_audio(intermediate_video, audio_path, final_output)
+            else:
+                final_output = intermediate_video
+
+            self.update_log.emit("[AI] Processing complete. Continuing with compression...")
+            return str(final_output)
+
+        except Exception as e:
+            self.error_msg.emit(f"AI processing failed: {str(e)[:200]}")
+            raise
+
+    def run(self):
+        g.completed = []
+        try:
+            if self._task_queue:
+                self._run_task_queue()
+            else:
+                self._run_legacy()
         except Exception as e:
             error_text = str(e)
-            # Show the actual FFmpeg error to the user for proper diagnosis
             display_error = error_text[:200] if len(error_text) > 200 else error_text
             self.error_msg.emit(f"❌ {display_error}")
-            
             msg = f"Error during compression: {e}"
             print(msg)
             g.compressing = False
+        finally:
+            self._cleanup_ai_temp()
 
-        print(msg)
-        self.update_log.emit(msg)
+        print("Done" if g.compressing else "Aborted")
         self.completed.emit()
+
+    def _run_task_queue(self):
+        """Process all tasks from the task queue."""
+        total_tasks = len(self._task_queue)
+        for task_idx, task in enumerate(self._task_queue):
+            if not g.compressing:
+                break
+
+            self.task_started.emit(task["id"])
+
+            # Apply task settings to self
+            pipeline = task.get("pipeline", {})
+            compress = pipeline.get("compress", {})
+            self.target_size_mb = compress.get("size_mb", 20)
+            self.codec = compress.get("codec", "libx264")
+            self.export_format = compress.get("export_format", "Original")
+            self.audio_codec = compress.get("audio_codec", "copy")
+            self.is_audio_only = task.get("is_audio_only", False)
+            self.resolution = compress.get("resolution", "Original")
+            self.custom_name = compress.get("custom_name", "")
+
+            # Build AI config from pipeline
+            self.ai_config = None
+            ai_parts = []
+            if pipeline.get("upscale", {}).get("enabled"):
+                ai_parts.append("Upscale")
+            if pipeline.get("interpolate", {}).get("enabled"):
+                ai_parts.append("Interpolation")
+            if pipeline.get("colorize", {}).get("enabled"):
+                ai_parts.append("Colorize")
+
+            if ai_parts:
+                self.ai_config = {"mode": " + ".join(ai_parts)}
+                self.ai_config["ai_order"] = task.get("ai_order", ["colorize", "upscale", "interpolate"])
+                if pipeline.get("colorize", {}).get("enabled"):
+                    self.ai_config["colorize_enabled"] = True
+                    self.ai_config["colorize_model"] = pipeline["colorize"].get("model", "deoldify-artistic")
+                    self.ai_config["colorize_render_factor"] = pipeline["colorize"].get("render_factor", 256)
+                if pipeline.get("upscale", {}).get("enabled"):
+                    self.ai_config["upscale_model"] = pipeline["upscale"].get("model", "realesrgan-x4plus")
+                    self.ai_config["upscale_scale"] = pipeline["upscale"].get("scale", 2)
+                if pipeline.get("interpolate", {}).get("enabled"):
+                    self.ai_config["interp_model"] = pipeline["interpolate"].get("model", "rife-v4.6")
+                    self.ai_config["interp_multiplier"] = pipeline["interpolate"].get("multiplier", 2)
+
+            # Set output dir
+            g.output_dir = task.get("output_dir", g.output_dir)
+
+            self.update_log.emit(f"Task {task_idx + 1}/{total_tasks}: Processing {len(task['source_files'])} file(s)...")
+
+            for file_path in task["source_files"]:
+                if not g.compressing:
+                    break
+                if self.is_audio_only:
+                    self.run_audio_pass(file_path)
+                else:
+                    processed_path = self.run_ai_processing(file_path)
+                    self.run_pass(processed_path)
+                    self._cleanup_ai_temp()
+                g.completed.append(file_path)
+
+        msg = f"Completed {len(g.completed)} file(s)!" if g.compressing else "Aborted!"
+        self.update_log.emit(msg)
+
+    def _run_legacy(self):
+        """Legacy mode: process files from g.queue."""
+        for file_path in g.queue:
+            if not g.compressing:
+                break
+            if self.is_audio_only:
+                self.run_audio_pass(file_path)
+            else:
+                processed_path = self.run_ai_processing(file_path)
+                self.run_pass(processed_path)
+                self._cleanup_ai_temp()
+            g.completed.append(file_path)
+        msg = f"Compressed {len(g.completed)} video(s)!" if g.compressing else "Aborted!"
+        self.update_log.emit(msg)
+
+    def _cleanup_ai_temp(self):
+        """Remove AI temporary directory."""
+        import shutil
+        temp_base = Path(g.output_dir) / ".ai_temp"
+        if temp_base.exists():
+            try:
+                shutil.rmtree(temp_base, ignore_errors=True)
+            except Exception:
+                pass

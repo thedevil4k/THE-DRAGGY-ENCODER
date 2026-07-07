@@ -10,8 +10,13 @@ DEFAULT_SETTINGS = {"target_size": 20.0, "codec": "libx264"}
 
 ffmpeg_path = "ffmpeg"
 ffprobe_path = "ffprobe"
+realesrgan_path = ""
+rife_path = ""
 queue = []
 completed = []
+task_queue = []
+task_id_counter = 0
+active_task_id = None
 root_dir = ""
 bin_dir = ""
 output_dir = ""
@@ -51,6 +56,10 @@ def verify_directories():
     if platform.system() == "Windows":
         ffmpeg_path = os.path.join(bin_dir, "ffmpeg.exe")
         ffprobe_path = os.path.join(bin_dir, "ffprobe.exe")
+        realesrgan_path = os.path.join(bin_dir, "realesrgan-ncnn-vulkan.exe")
+        rife_path = os.path.join(bin_dir, "rife-ncnn-vulkan.exe")
     else:
         ffmpeg_path = os.path.join(bin_dir, "ffmpeg")
         ffprobe_path = os.path.join(bin_dir, "ffprobe")
+        realesrgan_path = os.path.join(bin_dir, "realesrgan-ncnn-vulkan")
+        rife_path = os.path.join(bin_dir, "rife-ncnn-vulkan")

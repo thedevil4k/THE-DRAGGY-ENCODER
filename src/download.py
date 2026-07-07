@@ -10,6 +10,12 @@ from PySide6.QtCore import QThread, Signal
 FFMPEG_DL_WINDOWS = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
 FFMPEG_DL_LINUX = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
 
+REALESRGAN_DL_WINDOWS = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
+REALESRGAN_DL_LINUX = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-ubuntu.zip"
+
+RIFE_DL_WINDOWS = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-windows.zip"
+RIFE_DL_LINUX = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-linux.zip"
+
 
 def download_ffmpeg_func(progress_callback=None, log_callback=None):
     """
@@ -149,3 +155,326 @@ class DownloadThread(QThread):
         if download_ffmpeg_func(self.update_progress.emit, self.update_log.emit):
             if install_ffmpeg_func(self.update_log.emit):
                 self.installed.emit()
+
+
+# ──────────────────────────────────────────────
+# Real-ESRGAN download / install
+# ──────────────────────────────────────────────
+
+def download_realesrgan_func(progress_callback=None, log_callback=None):
+    """Download Real-ESRGAN ncnn-vulkan."""
+    if log_callback:
+        log_callback("Downloading Real-ESRGAN...")
+    print("Downloading Real-ESRGAN...")
+
+    is_linux = platform.system() == "Linux"
+    url = REALESRGAN_DL_LINUX if is_linux else REALESRGAN_DL_WINDOWS
+    ext = ".tar.xz" if is_linux else ".zip"
+    file_path = os.path.join(g.bin_dir, f"realesrgan{ext}")
+
+    try:
+        response = requests.get(url, stream=True)
+        if not response.ok:
+            error_msg = f"Real-ESRGAN download failed: {response.status_code}"
+            if log_callback:
+                log_callback(error_msg)
+            print(error_msg)
+            return False
+
+        total_size = response.headers.get("content-length")
+        with open(file_path, "wb") as f:
+            if total_size is None:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                total_size = int(total_size)
+                for chunk in response.iter_content(chunk_size=4096):
+                    downloaded += len(chunk)
+                    f.write(chunk)
+                    percentage = (downloaded / total_size) * 100
+                    downloaded_mb = downloaded / (1024 * 1024)
+                    total_mb = total_size / (1024 * 1024)
+                    if log_callback:
+                        log_callback(f"Downloading Real-ESRGAN...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
+                    if progress_callback:
+                        progress_callback(int(percentage))
+        return True
+    except Exception as e:
+        error_msg = f"Real-ESRGAN download error: {e}"
+        if log_callback:
+            log_callback(error_msg)
+        print(error_msg)
+        return False
+
+
+def install_realesrgan_func(log_callback=None):
+    """Extract and install Real-ESRGAN ncnn-vulkan."""
+    if log_callback:
+        log_callback("Installing Real-ESRGAN...")
+    print("Installing Real-ESRGAN...")
+
+    is_linux = platform.system() == "Linux"
+    ext = ".tar.xz" if is_linux else ".zip"
+    archive_path = os.path.join(g.bin_dir, f"realesrgan{ext}")
+
+    if not os.path.exists(archive_path):
+        if log_callback:
+            log_callback("Real-ESRGAN archive not found!")
+        return False
+
+    try:
+        if is_linux:
+            with tarfile.open(archive_path, "r:xz") as tar:
+                tar.extractall(g.bin_dir)
+        else:
+            with zipfile.ZipFile(archive_path, "r") as zip_file:
+                zip_file.extractall(g.bin_dir)
+
+        os.remove(archive_path)
+
+        # Find extracted directory
+        dir_list = [d for d in os.listdir(g.bin_dir) if os.path.isdir(os.path.join(g.bin_dir, d))]
+        if not dir_list:
+            return False
+
+        extracted_root = os.path.join(g.bin_dir, dir_list[0])
+
+        # Move binary to bin_dir
+        bin_name = "realesrgan-ncnn-vulkan.exe" if platform.system() == "Windows" else "realesrgan-ncnn-vulkan"
+        src_bin = os.path.join(extracted_root, bin_name)
+        dst_bin = os.path.join(g.bin_dir, bin_name)
+        if os.path.exists(src_bin):
+            if os.path.exists(dst_bin):
+                os.remove(dst_bin)
+            shutil.move(src_bin, dst_bin)
+
+        # Move models directory
+        src_models = os.path.join(extracted_root, "models")
+        dst_models = os.path.join(g.bin_dir, "models")
+        if os.path.exists(src_models):
+            if os.path.exists(dst_models):
+                shutil.rmtree(dst_models)
+            shutil.move(src_models, dst_models)
+
+        # Cleanup extracted folder
+        shutil.rmtree(extracted_root, ignore_errors=True)
+
+        # Make executable on Linux
+        if is_linux and os.path.exists(dst_bin):
+            os.chmod(dst_bin, 0o755)
+
+        if os.path.exists(dst_bin):
+            if log_callback:
+                log_callback("Real-ESRGAN installed successfully!")
+            return True
+        return False
+    except Exception as e:
+        error_msg = f"Real-ESRGAN install error: {e}"
+        if log_callback:
+            log_callback(error_msg)
+        print(error_msg)
+        return False
+
+
+# ──────────────────────────────────────────────
+# RIFE download / install
+# ──────────────────────────────────────────────
+
+def download_rife_func(progress_callback=None, log_callback=None):
+    """Download RIFE ncnn-vulkan."""
+    if log_callback:
+        log_callback("Downloading RIFE...")
+    print("Downloading RIFE...")
+
+    is_linux = platform.system() == "Linux"
+    url = RIFE_DL_LINUX if is_linux else RIFE_DL_WINDOWS
+    ext = ".tar.xz" if is_linux else ".zip"
+    file_path = os.path.join(g.bin_dir, f"rife{ext}")
+
+    try:
+        response = requests.get(url, stream=True)
+        if not response.ok:
+            error_msg = f"RIFE download failed: {response.status_code}"
+            if log_callback:
+                log_callback(error_msg)
+            print(error_msg)
+            return False
+
+        total_size = response.headers.get("content-length")
+        with open(file_path, "wb") as f:
+            if total_size is None:
+                f.write(response.content)
+            else:
+                downloaded = 0
+                total_size = int(total_size)
+                for chunk in response.iter_content(chunk_size=4096):
+                    downloaded += len(chunk)
+                    f.write(chunk)
+                    percentage = (downloaded / total_size) * 100
+                    downloaded_mb = downloaded / (1024 * 1024)
+                    total_mb = total_size / (1024 * 1024)
+                    if log_callback:
+                        log_callback(f"Downloading RIFE...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
+                    if progress_callback:
+                        progress_callback(int(percentage))
+        return True
+    except Exception as e:
+        error_msg = f"RIFE download error: {e}"
+        if log_callback:
+            log_callback(error_msg)
+        print(error_msg)
+        return False
+
+
+def install_rife_func(log_callback=None):
+    """Extract and install RIFE ncnn-vulkan."""
+    if log_callback:
+        log_callback("Installing RIFE...")
+    print("Installing RIFE...")
+
+    is_linux = platform.system() == "Linux"
+    ext = ".tar.xz" if is_linux else ".zip"
+    archive_path = os.path.join(g.bin_dir, f"rife{ext}")
+
+    if not os.path.exists(archive_path):
+        if log_callback:
+            log_callback("RIFE archive not found!")
+        return False
+
+    try:
+        if is_linux:
+            with tarfile.open(archive_path, "r:xz") as tar:
+                tar.extractall(g.bin_dir)
+        else:
+            with zipfile.ZipFile(archive_path, "r") as zip_file:
+                zip_file.extractall(g.bin_dir)
+
+        os.remove(archive_path)
+
+        # Find extracted directory
+        dir_list = [d for d in os.listdir(g.bin_dir) if os.path.isdir(os.path.join(g.bin_dir, d))]
+        if not dir_list:
+            return False
+
+        extracted_root = os.path.join(g.bin_dir, dir_list[0])
+
+        # Move binary to bin_dir
+        bin_name = "rife-ncnn-vulkan.exe" if platform.system() == "Windows" else "rife-ncnn-vulkan"
+        src_bin = os.path.join(extracted_root, bin_name)
+        dst_bin = os.path.join(g.bin_dir, bin_name)
+        if os.path.exists(src_bin):
+            if os.path.exists(dst_bin):
+                os.remove(dst_bin)
+            shutil.move(src_bin, dst_bin)
+
+        # Move models directory (if present)
+        src_models = os.path.join(extracted_root, "models")
+        dst_models = os.path.join(g.bin_dir, "models")
+        if os.path.exists(src_models):
+            if os.path.exists(dst_models):
+                # Merge: copy individual model subdirectories
+                for item in os.listdir(src_models):
+                    s = os.path.join(src_models, item)
+                    d = os.path.join(dst_models, item)
+                    if os.path.isdir(s):
+                        if os.path.exists(d):
+                            shutil.rmtree(d)
+                        shutil.move(s, d)
+                    else:
+                        shutil.move(s, d)
+            else:
+                shutil.move(src_models, dst_models)
+
+        # Cleanup extracted folder
+        shutil.rmtree(extracted_root, ignore_errors=True)
+
+        # Make executable on Linux
+        if is_linux and os.path.exists(dst_bin):
+            os.chmod(dst_bin, 0o755)
+
+        if os.path.exists(dst_bin):
+            if log_callback:
+                log_callback("RIFE installed successfully!")
+            return True
+        return False
+    except Exception as e:
+        error_msg = f"RIFE install error: {e}"
+        if log_callback:
+            log_callback(error_msg)
+        print(error_msg)
+        return False
+
+
+# ──────────────────────────────────────────────
+# DeOldify model download
+# ──────────────────────────────────────────────
+
+def download_deoldify_model(progress_callback=None, log_callback=None, model_key=None):
+    """Download DeOldify ONNX model(s).
+
+    If model_key is None, downloads all colorize models.
+    If model_key is specified, downloads only that model.
+    """
+    from src.ai_tools import COLORIZE_MODELS
+
+    if model_key:
+        models_to_download = {model_key: COLORIZE_MODELS[model_key]}
+    else:
+        models_to_download = COLORIZE_MODELS
+
+    models_dir = os.path.join(g.bin_dir, "models")
+    os.makedirs(models_dir, exist_ok=True)
+
+    all_ok = True
+    for key, model_info in models_to_download.items():
+        file_path = os.path.join(models_dir, model_info["model_filename"])
+        if os.path.exists(file_path):
+            if log_callback:
+                log_callback(f"{model_info['name']} already downloaded.")
+            continue
+
+        if log_callback:
+            log_callback(f"Downloading {model_info['name']}...")
+        print(f"Downloading {model_info['name']}...")
+
+        try:
+            response = requests.get(model_info["model_url"], stream=True)
+            if not response.ok:
+                error_msg = f"{model_info['name']} download failed: {response.status_code}"
+                if log_callback:
+                    log_callback(error_msg)
+                print(error_msg)
+                all_ok = False
+                continue
+
+            total_size = response.headers.get("content-length")
+            with open(file_path, "wb") as f:
+                if total_size is None:
+                    f.write(response.content)
+                else:
+                    downloaded = 0
+                    total_size = int(total_size)
+                    for chunk in response.iter_content(chunk_size=4096):
+                        downloaded += len(chunk)
+                        f.write(chunk)
+                        percentage = (downloaded / total_size) * 100
+                        downloaded_mb = downloaded / (1024 * 1024)
+                        total_mb = total_size / (1024 * 1024)
+                        if log_callback:
+                            log_callback(f"Downloading {model_info['name']}...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
+                        if progress_callback:
+                            progress_callback(int(percentage))
+
+            if os.path.exists(file_path):
+                if log_callback:
+                    log_callback(f"{model_info['name']} downloaded successfully!")
+            else:
+                all_ok = False
+        except Exception as e:
+            error_msg = f"{model_info['name']} download error: {e}"
+            if log_callback:
+                log_callback(error_msg)
+            print(error_msg)
+            all_ok = False
+
+    return all_ok
