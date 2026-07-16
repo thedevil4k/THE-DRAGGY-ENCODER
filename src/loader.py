@@ -38,103 +38,59 @@ class LoadingThread(QThread):
 
     def run(self):
         from src.thread import is_encoder_supported
-        from src.download import (
-            download_ffmpeg_func, install_ffmpeg_func,
-            download_realesrgan_func, install_realesrgan_func,
-            download_rife_func, install_rife_func,
-            download_deoldify_model,
+        from src.binary_manager import check_and_update_binaries
+
+        # 0. Ensure all external binaries/models are present and up-to-date.
+        # The manager uses a local manifest in bin_dir/.manifest.json so it
+        # skips downloads when nothing has changed.
+        dependency_report = check_and_update_binaries(
+            progress_callback=self.progress.emit,
+            log_callback=self.status.emit,
         )
-        
-        # 0. Check for FFmpeg installation
-        if not os.path.exists(g.ffmpeg_path) or not os.path.exists(g.ffprobe_path):
-            self.status.emit("FFmpeg not found. Downloading...")
-            self.tag_added.emit("FFmpeg: Downloading...", "#FAB387")
-            
-            # Use standalone functions with signals as callbacks
-            if download_ffmpeg_func(self.progress.emit, self.status.emit):
-                if install_ffmpeg_func(self.status.emit):
-                    self.tag_added.emit("FFmpeg: Installed", "#A6E3A1")
+
+        tag_labels = {
+            "ffmpeg": ("FFmpeg", "#A6E3A1", "#F38BA8"),
+            "realesrgan": ("Real-ESRGAN", "#A6E3A1", "#F38BA8"),
+            "rife": ("RIFE", "#A6E3A1", "#F38BA8"),
+            "deoldify": ("DeOldify models", "#A6E3A1", "#F38BA8"),
+        }
+
+        for key, status in dependency_report["results"].items():
+            label, ok_color, fail_color = tag_labels.get(key, (key.capitalize(), "#A6E3A1", "#F38BA8"))
+            if status == "uptodate":
+                self.tag_added.emit(f"{label}: Up-to-date", ok_color)
+            elif status == "installed":
+                self.tag_added.emit(f"{label}: Installed", ok_color)
+                if key == "ffmpeg":
                     g.ffmpeg_installed = True
-                    # Re-verify paths just in case
-                    if platform.system() == "Windows":
-                        g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg.exe")
-                        g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe.exe")
-                    else:
-                        g.ffmpeg_path = os.path.join(g.bin_dir, "ffmpeg")
-                        g.ffprobe_path = os.path.join(g.bin_dir, "ffprobe")
-                else:
-                    self.tag_added.emit("FFmpeg: Install Failed", "#F38BA8")
             else:
-                self.tag_added.emit("FFmpeg: Download Failed", "#F38BA8")
+                self.tag_added.emit(f"{label}: Failed", fail_color)
 
-        # 0b. Download AI tools if missing
-        if not os.path.exists(g.realesrgan_path):
-            self.status.emit("Downloading Real-ESRGAN...")
-            self.tag_added.emit("Real-ESRGAN: Downloading...", "#FAB387")
-            if download_realesrgan_func(self.progress.emit, self.status.emit):
-                if install_realesrgan_func(self.status.emit):
-                    self.tag_added.emit("Real-ESRGAN: Installed", "#A6E3A1")
-                else:
-                    self.tag_added.emit("Real-ESRGAN: Install Failed", "#F38BA8")
-            else:
-                self.tag_added.emit("Real-ESRGAN: Download Failed", "#F38BA8")
-
-        if not os.path.exists(g.rife_path):
-            self.status.emit("Downloading RIFE...")
-            self.tag_added.emit("RIFE: Downloading...", "#FAB387")
-            if download_rife_func(self.progress.emit, self.status.emit):
-                if install_rife_func(self.status.emit):
-                    self.tag_added.emit("RIFE: Installed", "#A6E3A1")
-                else:
-                    self.tag_added.emit("RIFE: Install Failed", "#F38BA8")
-            else:
-                self.tag_added.emit("RIFE: Download Failed", "#F38BA8")
-
-        # 0c. Download DeOldify models if missing
-        from src.ai_tools import get_deoldify_model_path, COLORIZE_MODELS
-        for model_key in COLORIZE_MODELS:
-            if not get_deoldify_model_path(model_key):
-                model_name = COLORIZE_MODELS[model_key]["name"]
-                self.status.emit(f"Downloading {model_name}...")
-                self.tag_added.emit(f"{model_name}: Downloading...", "#FAB387")
-                if download_deoldify_model(self.progress.emit, self.status.emit, model_key=model_key):
-                    self.tag_added.emit(f"{model_name}: Ready", "#A6E3A1")
-                else:
-                    self.tag_added.emit(f"{model_name}: Download Failed", "#F38BA8")
+        # If FFmpeg is a required component and failed, keep ffmpeg_installed False.
+        if "ffmpeg" not in dependency_report["required_failed"]:
+            g.ffmpeg_installed = os.path.exists(g.ffmpeg_path)
 
         # Explicit initialization to help linter
-        hw_info_data = {"cpu": "Unknown", "gpus": []}
+        hw_info_data = {"cpu": "Unknown", "gpus": [], "gpu_details": []}
         detected_encoders = []
-        
-        results = {
-            "hw_info": hw_info_data,
-            "encoders": detected_encoders
-        }
         
         # 1. Detect Hardware info (CPU/GPU)
         self.status.emit("Detecting hardware...")
         self.progress.emit(10)
         
         try:
-            if platform.system() == "Windows":
-                creation_flags = 0x08000000
-                cpu_cmd = ["powershell", "-Command", "Get-CimInstance Win32_Processor | Select-Object -ExpandProperty Name"]
-                cpu_output = subprocess.check_output(cpu_cmd, universal_newlines=True, creationflags=creation_flags).strip()
-                hw_info_data["cpu"] = cpu_output
-                cpu_tag = str(cpu_output)[:25]
-                self.tag_added.emit(f"CPU: {cpu_tag}", "#A6E3A1")
-                
-                gpu_cmd = ["powershell", "-Command", "Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty Name"]
-                gpu_output = subprocess.check_output(gpu_cmd, universal_newlines=True, creationflags=creation_flags).strip()
-                if gpu_output:
-                    gpus = [line.strip() for line in gpu_output.splitlines() if line.strip()]
-                    hw_info_data["gpus"] = gpus
-                    for gpu in gpus:
-                        gpu_tag = str(gpu)[:25]
-                        self.tag_added.emit(f"GPU: {gpu_tag}", "#FAB387")
-            else:
-                hw_info_data["cpu"] = "Linux CPU"
-                self.tag_added.emit("CPU: Linux Detected", "#A6E3A1")
+            from src.thread import get_hardware_info
+            hw_info_data.update(get_hardware_info())
+            
+            # Emit tags for UI
+            cpu_tag = str(hw_info_data.get("cpu", "Unknown"))[:25]
+            self.tag_added.emit(f"CPU: {cpu_tag}", "#A6E3A1")
+            for gpu in hw_info_data.get("gpu_details", []):
+                gpu_tag = str(gpu["name"])[:25]
+                vram_gb = round(gpu.get("vram_mb", 0) / 1024, 1)
+                vram_str = f" {vram_gb}GB" if vram_gb > 0 else ""
+                type_str = " (iGPU)" if gpu.get("type") == "integrated" else " (GPU)"
+                self.tag_added.emit(f"GPU: {gpu_tag}{vram_str}{type_str}", "#FAB387")
         except Exception as e:
             print(f"HW Detection Error: {e}")
             
@@ -151,9 +107,9 @@ class LoadingThread(QThread):
             try:
                 cmd = [g.ffmpeg_path, "-hide_banner", "-encoders"]
                 if platform.system() == "Windows":
-                    output = subprocess.check_output(cmd, universal_newlines=True, creationflags=0x08000000)
+                    output = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", creationflags=0x08000000)
                 else:
-                    output = subprocess.check_output(cmd, universal_newlines=True)
+                    output = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace")
                 
                 start_parsing = False
                 for line in output.splitlines():
@@ -190,30 +146,56 @@ class LoadingThread(QThread):
             
             # Only test if the binary actually has it
             if name in all_video_encoders:
-                # For hardware encoders, run quality-based capability test
+                # For hardware encoders, probe with 3-state semantics.
+                # Honest policy: always include HW encoders in the list even
+                # if the probe is inconclusive. UI marks inconclusive with a
+                # warning character so the user knows.
                 if any(hw in name for hw in ["nvenc", "amf", "qsv", "vaapi"]):
-                    if is_encoder_supported(name):
-                        if is_encoder_supported(name, "p010le"):
+                    status8, reason8 = is_encoder_supported(name)
+                    status10, _ = is_encoder_supported(name, "p010le")
+                    if status8 == "pass":
+                        if status10 == "pass":
                             detected_encoders.append(f"{name} (Modern 10-bit)")
-                            self.tag_added.emit(f"Codec: {name} (10-bit)", "#CBA6F7")
+                            self.tag_added.emit(f"Codec: {name} (10-bit) OK", "#CBA6F7")
                         detected_encoders.append(f"{name} (Standard 8-bit)")
-                        self.tag_added.emit(f"Codec: {name} (8-bit)", "#89B4FA")
+                        self.tag_added.emit(f"Codec: {name} (8-bit) OK", "#89B4FA")
+                    elif status8 == "inconclusive":
+                        if status10 == "pass":
+                            detected_encoders.append(f"{name} (Modern 10-bit)")
+                            self.tag_added.emit(f"Codec: {name} (10-bit)", "#89B4FA")
+                        detected_encoders.append(f"{name} (Standard 8-bit) ⚠")
+                        short = (reason8 or "unknown")[:60]
+                        self.tag_added.emit(f"Codec: {name} ⚠ inconclusive - {short}", "#F9E2AF")
+                        import src.globals as _g
+                        _g.encoder_errors[name] = ("inconclusive", reason8)
                     else:
-                        self.tag_added.emit(f"Codec: {name} (failed test)", "#F38BA8")
+                        short = (reason8 or "unknown")[:80]
+                        self.tag_added.emit(f"Codec: {name} FAILED - {short}", "#F38BA8")
+                        import src.globals as _g
+                        _g.encoder_errors[name] = ("missing", reason8)
                 else:
-                    # Software encoders are usually safe if present in binary
                     detected_encoders.append(name)
                     self.tag_added.emit(f"Codec: {name}", "#89B4FA")
-            
+            else:
+                if any(hw in name for hw in ["nvenc", "amf", "qsv", "vaapi"]):
+                    self.tag_added.emit(f"Codec: {name} missing from FFmpeg binary", "#F38BA8")
+                    import src.globals as _g
+                    _g.encoder_errors[name] = ("missing", "Not in FFmpeg binary")
+
             prog = 35 + int((i / total) * 55)
             self.progress.emit(prog)
-            
+
         if not detected_encoders:
             detected_encoders.append("libx264")
-            
+
         self.status.emit("Initialization complete!")
         self.progress.emit(100)
         self.msleep(300)
+
+        results = {
+            "hw_info": hw_info_data,
+            "encoders": detected_encoders,
+        }
 
         # Detect AI tools
         from src.ai_tools import get_gpu_vram_mb, get_gpu_name, check_onnx_available, get_deoldify_model_path

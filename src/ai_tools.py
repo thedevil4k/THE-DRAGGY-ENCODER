@@ -5,7 +5,73 @@ import shutil
 import subprocess
 from pathlib import Path
 import src.globals as g
+import re
 
+
+# ──────────────────────────────────────────────
+# GPU info utilities
+# ──────────────────────────────────────────────
+
+def parse_gpu_model_name(raw_name):
+    """
+    Extract clean model name from raw system output.
+    Examples:
+        "NVIDIA GeForce RTX 3060" -> "RTX 3060"
+        "AMD Radeon RX 6800"   -> "RX 6800"
+        "Intel UHD Graphics 620" -> "UHD Graphics 620"
+    """
+    # Remove common prefixes
+    if raw_name.startswith("NVIDIA ") or raw_name.startswith("GeForce "):
+        raw_name = re.sub(r"^(NVIDIA\s+)?(GeForce\s+)?", "", raw_name)
+    elif raw_name.startswith("AMD ") or raw_name.startswith("Radeon "):
+        raw_name = re.sub(r"^(AMD\s+)?(Radeon\s+)?", "", raw_name)
+    elif raw_name.startswith("Intel "):
+        raw_name = raw_name[6:].strip()
+
+    return raw_name.strip()
+
+
+def get_gpu_vram_display():
+    """
+    Return (model_name, vram_gb, display_text) for display in UI.
+    """
+    raw_name = get_gpu_name()
+    parsed_model = parse_gpu_model_name(raw_name)
+    vram_mb = get_gpu_vram_mb()
+    vram_gb = round(vram_mb / 1024, 1) if vram_mb > 0 else 0
+
+    if vram_gb > 0:
+        display = f"{parsed_model} • {vram_gb}GB"
+    else:
+        display = f"{parsed_model} • VRAM unknown"
+
+    return parsed_model, vram_gb, display
+
+
+def get_gpu_name():
+    """Detect primary GPU name."""
+    if platform.system() == "Windows":
+        try:
+            output = subprocess.check_output(
+                ["powershell", "-Command",
+                 "(Get-CimInstance Win32_VideoController | Select-Object -First 1).Name"],
+                text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+                creationflags=0x08000000,
+            )
+            name = output.strip()
+            if name:
+                return name
+        except Exception:
+            pass
+    else:
+        try:
+            output = subprocess.check_output(["lspci"], text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL)
+            for line in output.splitlines():
+                if "VGA" in line or "3D" in line:
+                    return line.split(": ", 1)[-1].strip() if ": " in line else line.strip()
+        except Exception:
+            pass
+    return "Unknown GPU"
 
 # ──────────────────────────────────────────────
 # Model catalog
@@ -23,6 +89,7 @@ COLORIZE_MODELS = {
         "model_url": "https://github.com/instant-high/deoldify-onnx/releases/download/deoldify-onnx/deoldify.onnx",
         "model_filename": "deoldify.onnx",
         "render_factor_default": 256,
+        "version": "1",
     },
     "deoldify-artistic-fp16": {
         "name": "DeOldify Artistic (FP16 Fast)",
@@ -35,6 +102,7 @@ COLORIZE_MODELS = {
         "model_url": "https://github.com/instant-high/deoldify-onnx/releases/download/deoldify-onnx/deoldify_fp16.onnx",
         "model_filename": "deoldify_fp16.onnx",
         "render_factor_default": 256,
+        "version": "1",
     },
 }
 
@@ -142,7 +210,7 @@ def get_gpu_vram_mb():
         try:
             output = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-                universal_newlines=True, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
                 creationflags=0x08000000,
             )
             values = [int(x.strip()) for x in output.strip().splitlines() if x.strip().isdigit()]
@@ -169,7 +237,7 @@ def get_gpu_vram_mb():
             )
             output = subprocess.check_output(
                 ["powershell", "-Command", ps_script],
-                universal_newlines=True, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
                 creationflags=0x08000000,
             )
             vram = int(float(output.strip()))
@@ -183,7 +251,7 @@ def get_gpu_vram_mb():
         try:
             output = subprocess.check_output(
                 ["nvidia-smi", "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-                universal_newlines=True, stderr=subprocess.DEVNULL,
+                text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
             )
             values = [int(x.strip()) for x in output.strip().splitlines() if x.strip().isdigit()]
             if values:
@@ -202,30 +270,69 @@ def get_gpu_vram_mb():
     return 0
 
 
-def get_gpu_name():
-    """Detect primary GPU name."""
-    if platform.system() == "Windows":
-        try:
-            output = subprocess.check_output(
-                ["powershell", "-Command",
-                 "(Get-CimInstance Win32_VideoController | Select-Object -First 1).Name"],
-                universal_newlines=True, stderr=subprocess.DEVNULL,
-                creationflags=0x08000000,
-            )
-            name = output.strip()
-            if name:
-                return name
-        except Exception:
-            pass
-    else:
-        try:
-            output = subprocess.check_output(["lspci"], universal_newlines=True, stderr=subprocess.DEVNULL)
-            for line in output.splitlines():
-                if "VGA" in line or "3D" in line:
-                    return line.split(": ", 1)[-1].strip() if ": " in line else line.strip()
-        except Exception:
-            pass
-    return "Unknown GPU"
+def get_nvidia_driver_version():
+    """
+    Returns NVIDIA driver version string (e.g. '566.36') or None if not detectable.
+    Uses nvidia-smi which is installed with NVIDIA drivers.
+    """
+    try:
+        kwargs = {"text": True, "encoding": "utf-8", "errors": "replace", "stderr": subprocess.DEVNULL}
+        if platform.system() == "Windows":
+            kwargs["creationflags"] = 0x08000000
+        output = subprocess.check_output(
+            ["nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader"],
+            **kwargs
+        )
+        versions = [line.strip() for line in output.splitlines() if line.strip()]
+        if versions:
+            return versions[0]
+    except Exception:
+        pass
+    return None
+
+
+def get_ffmpeg_hw_encoders_available():
+    """
+    Returns a dict grouping all hardware encoders that the installed FFmpeg
+    binary advertises via `ffmpeg -encoders`. This is the *ground truth* of
+    what FFmpeg can invoke, regardless of test outcomes.
+
+    Returns:
+        {
+            "nvenc": ["h264_nvenc", "hevc_nvenc", "av1_nvenc"],
+            "amf":   ["h264_amf", ...],
+            "qsv":   ["h264_qsv", ...],
+            "vaapi": ["h264_vaapi", ...],
+        }
+        Returns empty lists for families FFmpeg does not expose.
+    """
+    try:
+        kwargs = {"text": True, "encoding": "utf-8", "errors": "replace", "stderr": subprocess.DEVNULL}
+        if platform.system() == "Windows":
+            kwargs["creationflags"] = 0x08000000
+        output = subprocess.check_output(
+            [g.ffmpeg_path, "-hide_banner", "-encoders"], **kwargs
+        )
+    except Exception:
+        return {"nvenc": [], "amf": [], "qsv": [], "vaapi": []}
+
+    families = {"nvenc": [], "amf": [], "qsv": [], "vaapi": []}
+    parsing = False
+    for line in output.splitlines():
+        if "-----" in line:
+            parsing = True
+            continue
+        if not parsing or not line.startswith(" V"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        name = parts[1]
+        for family in families:
+            if name.endswith(f"_{family}"):
+                families[family].append(name)
+                break
+    return families
 
 
 def classify_vram(gpu_vram_mb, required_mb):
@@ -247,50 +354,119 @@ def detect_gpu_devices():
     """Detect available GPU devices for AI processing.
 
     Returns:
-        List of dicts: [{"id": 0, "name": "...", "type": "dedicated"/"integrated"}, ...]
+        List of dicts: [{"id": 0, "name": "...", "type": "dedicated"/"integrated", "vram_mb": 123, "vendor": "NVIDIA"}, ...]
     """
     gpus = []
 
-    # Try nvidia-smi for NVIDIA GPUs
+    # 1. NVIDIA via nvidia-smi
     try:
         import subprocess
         output = subprocess.check_output(
-            ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
-            universal_newlines=True, stderr=subprocess.DEVNULL
+            ["nvidia-smi", "--query-gpu=index,name,memory.total", "--format=csv,noheader,nounits"],
+            text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL
         )
         for line in output.strip().splitlines():
-            parts = line.split(", ", 1)
-            if len(parts) == 2:
+            parts = line.split(", ")
+            if len(parts) >= 2:
                 gpu_id = int(parts[0])
                 gpu_name = parts[1].strip()
-                gpus.append({"id": gpu_id, "name": gpu_name, "type": "dedicated"})
+                vram_mb = 0
+                if len(parts) >= 3 and parts[2].strip().isdigit():
+                    vram_mb = int(parts[2].strip())
+                gpus.append({
+                    "id": gpu_id,
+                    "name": gpu_name,
+                    "type": "dedicated",
+                    "vram_mb": vram_mb,
+                    "vendor": "NVIDIA"
+                })
     except Exception:
         pass
 
-    # Try Windows WMI for Intel/AMD integrated GPUs
+    # 2. Windows WMI for Intel/AMD integrated or discrete GPUs
     if platform.system() == "Windows":
         try:
             import subprocess
+            import json
             ps_cmd = (
                 'Get-CimInstance Win32_VideoController | '
                 'Select-Object Name, AdapterRAM | ConvertTo-Json'
             )
             output = subprocess.check_output(
                 ["powershell", "-NoProfile", "-Command", ps_cmd],
-                universal_newlines=True, stderr=subprocess.DEVNULL
+                text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL,
+                creationflags=0x08000000
             )
-            import json
-            data = json.loads(output)
-            if not isinstance(data, list):
-                data = [data]
-            existing_names = {g["name"] for g in gpus}
-            for gpu in data:
-                name = gpu.get("Name", "").strip()
-                if not name or name in existing_names:
-                    continue
-                gpu_type = "integrated" if any(w in name.lower() for w in ["intel", "amd"]) else "dedicated"
-                next_id = max([g["id"] for g in gpus], default=-1) + 1
-                gpus.append({"id": next_id, "name": name, "type": gpu_type})
+            if output.strip():
+                data = json.loads(output)
+                if not isinstance(data, list):
+                    data = [data]
+                existing_names = {g["name"] for g in gpus}
+                for gpu in data:
+                    name = gpu.get("Name", "").strip()
+                    if not name or name in existing_names:
+                        continue
+                    
+                    name_lower = name.lower()
+                    vendor = "Other"
+                    if "nvidia" in name_lower:
+                        vendor = "NVIDIA"
+                    elif "amd" in name_lower or "radeon" in name_lower:
+                        vendor = "AMD"
+                    elif "intel" in name_lower:
+                        vendor = "Intel"
+                        
+                    gpu_type = "dedicated"
+                    igpu_indicators = [
+                        "intel(r) hd", "intel(r) uhd", "intel(r) iris", "intel(r) xe", "intel hd", "intel uhd", "intel iris", "intel xe",
+                        "graphics", "integrated", "shared", "vega", "ryzen master", "apu"
+                    ]
+                    discrete_indicators = ["rtx", "gtx", "quadro", "radeon rx", "radeon pro", "firepro", "geforce", "arc a", "nvidia"]
+                    
+                    if any(k in name_lower for k in igpu_indicators):
+                        if not any(d in name_lower for d in discrete_indicators):
+                            gpu_type = "integrated"
+
+                    raw_ram = gpu.get("AdapterRAM", 0)
+                    if isinstance(raw_ram, int) and raw_ram > 0:
+                        vram_mb = raw_ram // (1024 * 1024)
+                    else:
+                        vram_mb = 0
+
+                    next_id = max([g["id"] for g in gpus], default=-1) + 1
+                    gpus.append({
+                        "id": next_id,
+                        "name": name,
+                        "type": gpu_type,
+                        "vram_mb": vram_mb,
+                        "vendor": vendor
+                    })
+        except Exception:
+            pass
+            
+    # 3. Linux lspci fallback
+    if not gpus and platform.system() != "Windows":
+        try:
+            output = subprocess.check_output(["lspci"], text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL)
+            for line in output.splitlines():
+                if "VGA" in line or "3D" in line or "Display" in line:
+                    name = line.split(": ", 1)[-1].strip() if ": " in line else line.strip()
+                    name_lower = name.lower()
+                    gpu_type = "integrated" if any(w in name_lower for w in ["intel", "graphics", "integrated"]) else "dedicated"
+                    vendor = "Other"
+                    if "nvidia" in name_lower:
+                        vendor = "NVIDIA"
+                    elif "amd" in name_lower or "radeon" in name_lower:
+                        vendor = "AMD"
+                    elif "intel" in name_lower:
+                        vendor = "Intel"
+                    gpus.append({
+                        "id": len(gpus),
+                        "name": name,
+                        "type": gpu_type,
+                        "vram_mb": 0,
+                        "vendor": vendor
+                    })
         except Exception:
             pass
 
@@ -334,7 +510,7 @@ def has_audio_stream(video_path):
         str(video_path),
     ]
     try:
-        output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.DEVNULL).strip()
+        output = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL).strip()
         return bool(output)
     except Exception:
         return False
@@ -365,7 +541,7 @@ def get_video_fps(video_path):
         str(video_path),
     ]
     try:
-        output = subprocess.check_output(cmd, universal_newlines=True, stderr=subprocess.DEVNULL)
+        output = subprocess.check_output(cmd, text=True, encoding="utf-8", errors="replace", stderr=subprocess.DEVNULL)
         fps_str = output.strip()
         if "/" in fps_str:
             num, den = fps_str.split("/")
@@ -520,7 +696,9 @@ class AIProcessor:
         kwargs = {
             "stdout": subprocess.PIPE,
             "stderr": subprocess.STDOUT,
-            "universal_newlines": True,
+            "text": True,
+            "encoding": "utf-8",
+            "errors": "replace",
         }
         if platform.system() == "Windows":
             kwargs["creationflags"] = 0x08000000

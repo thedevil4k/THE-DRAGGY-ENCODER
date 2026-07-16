@@ -7,7 +7,11 @@ import zipfile
 import tarfile
 from PySide6.QtCore import QThread, Signal
 
-FFMPEG_DL_WINDOWS = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+# BtbN/FFmpeg-Builds latest requires NVENC API 13.1 (driver 610+).
+# Many users have driver 581.57 which exposes NVENC API 13.0; using the
+# August 2024 autobuild keeps NVENC SDK 12.x compatibility while still
+# exposing h264_nvenc / hevc_nvenc 8-bit on those drivers.
+FFMPEG_DL_WINDOWS = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2024-08-31-12-50/ffmpeg-N-116806-g4c0372281b-win64-gpl.zip"
 FFMPEG_DL_LINUX = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-linux64-gpl.tar.xz"
 
 REALESRGAN_DL_WINDOWS = "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesrgan-ncnn-vulkan-20220424-windows.zip"
@@ -17,55 +21,60 @@ RIFE_DL_WINDOWS = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/2
 RIFE_DL_LINUX = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-linux.zip"
 
 
+def _download_file(url, dest_path, progress_callback=None, log_callback=None, label="Downloading"):
+    """Generic file downloader with progress reporting."""
+    if log_callback:
+        log_callback(f"{label}...")
+    print(f"{label}: {url}")
+
+    try:
+        response = requests.get(url, stream=True, timeout=(15, None))
+        response.raise_for_status()
+        total_size = response.headers.get("content-length")
+
+        with open(dest_path, "wb") as f:
+            if total_size is None:
+                f.write(response.content)
+                if log_callback:
+                    log_callback(f"{label} complete")
+                return True
+
+            total_size = int(total_size)
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=4096):
+                if not chunk:
+                    continue
+                downloaded += len(chunk)
+                f.write(chunk)
+                percentage = (downloaded / total_size) * 100
+                downloaded_mb = downloaded / (1024 * 1024)
+                total_mb = total_size / (1024 * 1024)
+                message = f"{label}...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB"
+                if log_callback:
+                    log_callback(message)
+                if progress_callback:
+                    progress_callback(int(percentage))
+        return True
+    except Exception as e:
+        error_msg = f"{label} error: {e}"
+        if log_callback:
+            log_callback(error_msg)
+        print(error_msg)
+        return False
+
+
 def download_ffmpeg_func(progress_callback=None, log_callback=None):
     """
     Standalone function to download FFmpeg.
     :param progress_callback: Function taking an int (0-100)
     :param log_callback: Function taking a str message
     """
-    if log_callback: log_callback("Downloading FFmpeg...")
-    print("Downloading FFmpeg...")
-    
     is_linux = platform.system() == "Linux"
     url = FFMPEG_DL_LINUX if is_linux else FFMPEG_DL_WINDOWS
     ext = ".tar.xz" if is_linux else ".zip"
+    file_path = os.path.join(g.bin_dir, f"ffmpeg{ext}")
 
-    bin_path = g.bin_dir
-    file_path = os.path.join(bin_path, f"ffmpeg{ext}")
-    
-    try:
-        response = requests.get(url, stream=True)
-        if not response.ok:
-            error_msg = f"Download failed: {response.status_code}"
-            if log_callback: log_callback(error_msg)
-            print(error_msg)
-            return False
-
-        print(f"Source: {url}")
-        total_size = response.headers.get("content-length")
-
-        with open(file_path, "wb") as f:
-            if total_size is None:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                total_size = int(total_size)
-
-                for chunk in response.iter_content(chunk_size=4096):
-                    downloaded += len(chunk)
-                    f.write(chunk)
-                    percentage = (downloaded / total_size) * 100
-                    downloaded_mb = downloaded / (1024 * 1024)
-                    total_mb = total_size / (1024 * 1024)
-                    message = f"Downloading FFmpeg...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB"
-                    if log_callback: log_callback(message)
-                    if progress_callback: progress_callback(int(percentage))
-        return True
-    except Exception as e:
-        error_msg = f"Download error: {e}"
-        if log_callback: log_callback(error_msg)
-        print(error_msg)
-        return False
+    return _download_file(url, file_path, progress_callback, log_callback, label="Downloading FFmpeg")
 
 
 def install_ffmpeg_func(log_callback=None):
@@ -163,48 +172,12 @@ class DownloadThread(QThread):
 
 def download_realesrgan_func(progress_callback=None, log_callback=None):
     """Download Real-ESRGAN ncnn-vulkan."""
-    if log_callback:
-        log_callback("Downloading Real-ESRGAN...")
-    print("Downloading Real-ESRGAN...")
-
     is_linux = platform.system() == "Linux"
     url = REALESRGAN_DL_LINUX if is_linux else REALESRGAN_DL_WINDOWS
     ext = ".tar.xz" if is_linux else ".zip"
     file_path = os.path.join(g.bin_dir, f"realesrgan{ext}")
 
-    try:
-        response = requests.get(url, stream=True)
-        if not response.ok:
-            error_msg = f"Real-ESRGAN download failed: {response.status_code}"
-            if log_callback:
-                log_callback(error_msg)
-            print(error_msg)
-            return False
-
-        total_size = response.headers.get("content-length")
-        with open(file_path, "wb") as f:
-            if total_size is None:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                total_size = int(total_size)
-                for chunk in response.iter_content(chunk_size=4096):
-                    downloaded += len(chunk)
-                    f.write(chunk)
-                    percentage = (downloaded / total_size) * 100
-                    downloaded_mb = downloaded / (1024 * 1024)
-                    total_mb = total_size / (1024 * 1024)
-                    if log_callback:
-                        log_callback(f"Downloading Real-ESRGAN...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-                    if progress_callback:
-                        progress_callback(int(percentage))
-        return True
-    except Exception as e:
-        error_msg = f"Real-ESRGAN download error: {e}"
-        if log_callback:
-            log_callback(error_msg)
-        print(error_msg)
-        return False
+    return _download_file(url, file_path, progress_callback, log_callback, label="Downloading Real-ESRGAN")
 
 
 def install_realesrgan_func(log_callback=None):
@@ -282,48 +255,12 @@ def install_realesrgan_func(log_callback=None):
 
 def download_rife_func(progress_callback=None, log_callback=None):
     """Download RIFE ncnn-vulkan."""
-    if log_callback:
-        log_callback("Downloading RIFE...")
-    print("Downloading RIFE...")
-
     is_linux = platform.system() == "Linux"
     url = RIFE_DL_LINUX if is_linux else RIFE_DL_WINDOWS
     ext = ".tar.xz" if is_linux else ".zip"
     file_path = os.path.join(g.bin_dir, f"rife{ext}")
 
-    try:
-        response = requests.get(url, stream=True)
-        if not response.ok:
-            error_msg = f"RIFE download failed: {response.status_code}"
-            if log_callback:
-                log_callback(error_msg)
-            print(error_msg)
-            return False
-
-        total_size = response.headers.get("content-length")
-        with open(file_path, "wb") as f:
-            if total_size is None:
-                f.write(response.content)
-            else:
-                downloaded = 0
-                total_size = int(total_size)
-                for chunk in response.iter_content(chunk_size=4096):
-                    downloaded += len(chunk)
-                    f.write(chunk)
-                    percentage = (downloaded / total_size) * 100
-                    downloaded_mb = downloaded / (1024 * 1024)
-                    total_mb = total_size / (1024 * 1024)
-                    if log_callback:
-                        log_callback(f"Downloading RIFE...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-                    if progress_callback:
-                        progress_callback(int(percentage))
-        return True
-    except Exception as e:
-        error_msg = f"RIFE download error: {e}"
-        if log_callback:
-            log_callback(error_msg)
-        print(error_msg)
-        return False
+    return _download_file(url, file_path, progress_callback, log_callback, label="Downloading RIFE")
 
 
 def install_rife_func(log_callback=None):
@@ -433,48 +370,17 @@ def download_deoldify_model(progress_callback=None, log_callback=None, model_key
                 log_callback(f"{model_info['name']} already downloaded.")
             continue
 
-        if log_callback:
-            log_callback(f"Downloading {model_info['name']}...")
-        print(f"Downloading {model_info['name']}...")
-
-        try:
-            response = requests.get(model_info["model_url"], stream=True)
-            if not response.ok:
-                error_msg = f"{model_info['name']} download failed: {response.status_code}"
-                if log_callback:
-                    log_callback(error_msg)
-                print(error_msg)
-                all_ok = False
-                continue
-
-            total_size = response.headers.get("content-length")
-            with open(file_path, "wb") as f:
-                if total_size is None:
-                    f.write(response.content)
-                else:
-                    downloaded = 0
-                    total_size = int(total_size)
-                    for chunk in response.iter_content(chunk_size=4096):
-                        downloaded += len(chunk)
-                        f.write(chunk)
-                        percentage = (downloaded / total_size) * 100
-                        downloaded_mb = downloaded / (1024 * 1024)
-                        total_mb = total_size / (1024 * 1024)
-                        if log_callback:
-                            log_callback(f"Downloading {model_info['name']}...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB")
-                        if progress_callback:
-                            progress_callback(int(percentage))
-
-            if os.path.exists(file_path):
-                if log_callback:
-                    log_callback(f"{model_info['name']} downloaded successfully!")
-            else:
-                all_ok = False
-        except Exception as e:
-            error_msg = f"{model_info['name']} download error: {e}"
+        ok = _download_file(
+            model_info["model_url"],
+            file_path,
+            progress_callback,
+            log_callback,
+            label=f"Downloading {model_info['name']}",
+        )
+        if ok:
             if log_callback:
-                log_callback(error_msg)
-            print(error_msg)
+                log_callback(f"{model_info['name']} downloaded successfully!")
+        else:
             all_ok = False
 
     return all_ok
