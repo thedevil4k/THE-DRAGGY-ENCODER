@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Draggy Encoder
-Exec=DraggyEncoder
+Exec=bash -c 'cd "$(dirname "%k")" && python3 launch.py'
 Icon=pyEncoder
 Type=Application
 Categories=AudioVideo;Video;Recorder;

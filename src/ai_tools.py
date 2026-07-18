@@ -88,6 +88,11 @@ COLORIZE_MODELS = {
         "best_for": "B&W video, old film, historical footage",
         "model_url": "https://github.com/instant-high/deoldify-onnx/releases/download/deoldify-onnx/deoldify.onnx",
         "model_filename": "deoldify.onnx",
+        # Integrity metadata from GitHub release API (release "deoldify-onnx",
+        # retrieved 2026-07-17). expected_sha256 can be filled with the published
+        # SHA256 digest once it is available.
+        "expected_size": 254789257,
+        "expected_sha256": None,
         "render_factor_default": 256,
         "version": "1",
     },
@@ -101,6 +106,11 @@ COLORIZE_MODELS = {
         "best_for": "B&W video, quick previews, weaker GPUs",
         "model_url": "https://github.com/instant-high/deoldify-onnx/releases/download/deoldify-onnx/deoldify_fp16.onnx",
         "model_filename": "deoldify_fp16.onnx",
+        # Integrity metadata from GitHub release API (release "deoldify-onnx",
+        # retrieved 2026-07-17). expected_sha256 can be filled with the published
+        # SHA256 digest once it is available.
+        "expected_size": 127421195,
+        "expected_sha256": None,
         "render_factor_default": 256,
         "version": "1",
     },
@@ -551,18 +561,38 @@ def get_video_fps(video_path):
         return 30.0
 
 
-def count_frames(frames_dir, fmt="jpg"):
-    """Count frame files in directory."""
+def count_frames(frames_dir, fmt=None):
+    """Count frame files in directory.
+
+    If fmt is None, counts common image formats (jpg, jpeg, png, bmp, webp).
+    """
     frames_dir = Path(frames_dir)
-    return len(list(frames_dir.glob(f"*.{fmt}")))
+    if fmt is not None:
+        return len(list(frames_dir.glob(f"*.{fmt}")))
+    return sum(len(list(frames_dir.glob(f"*.{ext}"))) for ext in ("jpg", "jpeg", "png", "bmp", "webp"))
 
 
-def encode_from_frames(frames_dir, output_path, fps, fmt="jpg"):
-    """Encode video from frame sequence with given FPS."""
+def encode_from_frames(frames_dir, output_path, fps, fmt=None):
+    """Encode video from frame sequence with given FPS.
+
+    Args:
+        frames_dir: Directory containing frames.
+        output_path: Output video path.
+        fps: Frames per second.
+        fmt: Frame format glob (e.g. 'jpg', 'png'). If None, auto-detects.
+    """
+    frames_dir = Path(frames_dir)
+    if fmt is None:
+        for ext in ("jpg", "jpeg", "png"):
+            if any(frames_dir.glob(f"*.{ext}")):
+                fmt = ext
+                break
+        if fmt is None:
+            raise RuntimeError(f"No frames found in {frames_dir}")
     cmd = [
         str(g.ffmpeg_path), "-y",
         "-framerate", str(fps),
-        "-i", str(Path(frames_dir) / f"%08d.{fmt}"),
+        "-i", str(frames_dir / f"%08d.{fmt}"),
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         str(output_path),
@@ -606,6 +636,63 @@ def _run_silent(cmd):
 
 
 # ──────────────────────────────────────────────
+# AI binary / model verification
+# ──────────────────────────────────────────────
+
+def _normalize_device(device):
+    """Normalize a device selection to an integer GPU id or None.
+
+    Accepts: None, "cpu", -1, 0, 1, 2...
+    Returns: None (auto), -1 (CPU), or >=0 (GPU id)
+    """
+    if device is None:
+        return None
+    if isinstance(device, str):
+        if device.lower() == "cpu":
+            return -1
+        try:
+            device = int(device)
+        except ValueError:
+            return None
+    if isinstance(device, int):
+        return device
+    return None
+
+
+def verify_realesrgan_binary():
+    """Return True if the Real-ESRGAN binary exists."""
+    return bool(g.realesrgan_path and Path(g.realesrgan_path).exists())
+
+
+def verify_rife_binary():
+    """Return True if the RIFE binary exists."""
+    return bool(g.rife_path and Path(g.rife_path).exists())
+
+
+def verify_deoldify_model(model_key="deoldify-artistic"):
+    """Return True if the requested DeOldify ONNX model exists."""
+    model_path = get_deoldify_model_path(model_key)
+    return bool(model_path and Path(model_path).exists())
+
+
+def ensure_deoldify_model(model_key="deoldify-artistic", log_callback=None):
+    """Download the DeOldify model if it is missing.
+
+    Returns True if the model is available, False otherwise.
+    """
+    if verify_deoldify_model(model_key):
+        return True
+    try:
+        # Import here to avoid circular imports at module load time.
+        from src.download import download_deoldify_model
+        return download_deoldify_model(progress_callback=None, log_callback=log_callback, model_key=model_key)
+    except Exception as e:
+        if log_callback:
+            log_callback(f"Failed to download DeOldify model: {e}")
+        return False
+
+
+# ──────────────────────────────────────────────
 # AI Processor
 # ──────────────────────────────────────────────
 
@@ -616,6 +703,7 @@ class AIProcessor:
         self.log = log_callback or (lambda msg: None)
         self.progress = progress_callback or (lambda pct: None)
         self._process = None
+        self._aborted = False
 
     def upscale_frames(self, input_dir, output_dir, model_key, scale, tile_size=0, gpu_id=None):
         """Upscale frames using Real-ESRGAN ncnn-vulkan.
@@ -632,6 +720,11 @@ class AIProcessor:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        if not verify_realesrgan_binary():
+            raise RuntimeError("Real-ESRGAN binary not found. Please restart to download it.")
+
+        gpu_id = _normalize_device(gpu_id)
+
         cmd = [
             str(g.realesrgan_path),
             "-i", str(input_dir),
@@ -646,7 +739,7 @@ class AIProcessor:
             cmd.extend(["-t", str(tile_size)])
 
         self.log(f"Running Real-ESRGAN: {model_key} x{scale}")
-        self._run_process(cmd)
+        self._run_process(cmd, input_dir)
 
     def interpolate_frames(self, input_dir, output_dir, model_key, multiplier, gpu_id=None):
         """Interpolate frames using RIFE ncnn-vulkan.
@@ -660,6 +753,11 @@ class AIProcessor:
         input_dir = Path(input_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
+
+        if not verify_rife_binary():
+            raise RuntimeError("RIFE binary not found. Please restart to download it.")
+
+        gpu_id = _normalize_device(gpu_id)
 
         # Determine model path for rife
         model_path = _find_rife_model(model_key)
@@ -680,10 +778,11 @@ class AIProcessor:
             cmd.extend(["-n", str(target_count)])
 
         self.log(f"Running RIFE: {model_key} x{multiplier}")
-        self._run_process(cmd)
+        self._run_process(cmd, input_dir)
 
     def abort(self):
-        """Kill the active process."""
+        """Signal and kill the active process."""
+        self._aborted = True
         if self._process and self._process.poll() is None:
             self._process.terminate()
             try:
@@ -691,7 +790,7 @@ class AIProcessor:
             except subprocess.TimeoutExpired:
                 self._process.kill()
 
-    def _run_process(self, cmd):
+    def _run_process(self, cmd, input_dir):
         """Run an ncnn-vulkan process, forwarding stderr for progress."""
         kwargs = {
             "stdout": subprocess.PIPE,
@@ -703,16 +802,38 @@ class AIProcessor:
         if platform.system() == "Windows":
             kwargs["creationflags"] = 0x08000000
 
+        total_frames = count_frames(input_dir)
         self._process = subprocess.Popen(cmd, **kwargs)
         if self._process.stdout:
             for line in self._process.stdout:
+                if self._aborted:
+                    break
                 stripped = line.strip()
                 if stripped:
                     self.log(stripped)
+                    # ncnn-vulkan tools print "frame = 123" or similar progress
+                    self._parse_progress(stripped, total_frames)
         self._process.wait()
 
-        if self._process.returncode != 0:
+        # If the user aborted, the process may have a non-zero exit code;
+        # don't treat that as an error.
+        if self._process.returncode != 0 and not self._aborted:
             raise RuntimeError(f"AI tool failed with return code {self._process.returncode}")
+
+    def _parse_progress(self, line, total_frames):
+        """Try to extract progress from ncnn-vulkan stdout lines."""
+        if total_frames <= 0:
+            return
+        # Real-ESRGAN / RIFE may print "frame = 123"
+        import re
+        match = re.search(r"frame\s*=\s*(\d+)", line, re.IGNORECASE)
+        if match:
+            try:
+                current = int(match.group(1))
+                pct = int(min(current / total_frames, 1.0) * 100)
+                self.progress(pct)
+            except (ValueError, IndexError):
+                pass
 
 
 def _find_rife_model(model_key):
@@ -771,6 +892,7 @@ class DeOldifyProcessor:
         self.log = log_callback or (lambda msg: None)
         self.progress = progress_callback or (lambda pct: None)
         self._colorizer = None
+        self._aborted = False
 
     def colorize_frames(self, input_dir, output_dir, render_factor=256, model_key="deoldify-artistic", device=None):
         """Colorize all frames in a directory using DeOldify ONNX.
@@ -782,6 +904,9 @@ class DeOldifyProcessor:
             model_key: Key in COLORIZE_MODELS dict.
             device: "cuda", "cpu", or None for auto-detect.
         """
+        import cv2
+        import src.globals as g
+
         input_dir = Path(input_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -790,7 +915,11 @@ class DeOldifyProcessor:
         if not model_path:
             raise RuntimeError("DeOldify model not found. Please restart to download it.")
 
+        # Reset abort flag for each run
+        self._aborted = False
+
         # Initialize colorizer with device selection
+        device = _normalize_device(device)
         if device is None:
             _, has_cuda, _ = check_onnx_available()
             device = "cuda" if has_cuda else "cpu"
@@ -803,15 +932,21 @@ class DeOldifyProcessor:
         from src.color.deoldify import DeOldifyONNX
         self._colorizer = DeOldifyONNX(model_path, device=device)
 
-        # Process frames
-        import cv2
+        # Process frames (support both jpg and png)
         frame_files = sorted(input_dir.glob("*.jpg")) + sorted(input_dir.glob("*.png"))
-        total = len(frame_files)
+        total = max(1, len(frame_files))
 
         for i, frame_path in enumerate(frame_files):
+            if self._aborted or not g.compressing:
+                self.log("Colorization aborted by user.")
+                break
+
             image = cv2.imread(str(frame_path))
             if image is None:
                 continue
+
+            if self._aborted or self._colorizer is None:
+                raise RuntimeError("Colorization aborted.")
 
             colorized = self._colorizer.colorize(image, render_factor)
 
@@ -826,4 +961,6 @@ class DeOldifyProcessor:
 
     def abort(self):
         """Abort processing (no subprocess to kill for ONNX)."""
-        self._colorizer = None
+        self._aborted = True
+        # Do not wipe _colorizer here to avoid AttributeError in the
+        # middle of colorize(); the loop checks _aborted first.

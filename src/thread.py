@@ -579,6 +579,7 @@ class CompressionThread(QThread):
         self.target_bitrate_kbps = target_bitrate_kbps
         self.process = None
         self._task_queue = None
+        self._current_ai_processor = None
         self.trim_enabled = bool(trim_enabled)
         self.trim_start_s = max(0.0, float(trim_start_s or 0.0))
         self.trim_end_s = (None if trim_end_s in (None, "")
@@ -617,8 +618,8 @@ class CompressionThread(QThread):
         file_name = file_path.name
         v_len = get_video_length(file_path)
 
-        total_steps = len(g.queue)
-        current_step = len(g.completed)
+        total_steps = max(1, len(g.queue))
+        current_step = min(len(g.completed), total_steps - 1)
         base_percentage = (current_step / total_steps) * 100
         self.update_progress.emit(int(base_percentage))
         
@@ -901,8 +902,10 @@ class CompressionThread(QThread):
             num_passes = 2
 
         for i in range(num_passes):
-            total_steps = len(g.queue) * num_passes
-            current_step = (len(g.completed) * num_passes) + i
+            raw_total = len(g.queue) * num_passes
+            total_steps = max(1, raw_total)
+            raw_current = (len(g.completed) * num_passes) + i
+            current_step = raw_current if raw_total > 0 else 0
             base_percentage = (current_step / total_steps) * 100
             self.update_progress.emit(int(base_percentage))
             
@@ -963,7 +966,14 @@ class CompressionThread(QThread):
                 cmd.extend(["-b:v", bitrate_str, "-c:v", pure_codec])
 
             if "vaapi" in pure_codec and platform.system() == "Linux":
-                cmd[1:1] = ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-vaapi_device", "/dev/dri/renderD128"]
+                # Insert hwaccel args before the actual input file (-i)
+                # Find the last -i to avoid matching -i inside filter strings
+                try:
+                    input_idx = len(cmd) - 1 - cmd[::-1].index("-i")
+                except ValueError:
+                    input_idx = len(cmd)
+                hwaccel_args = ["-hwaccel", "vaapi", "-hwaccel_output_format", "vaapi", "-vaapi_device", "/dev/dri/renderD128"]
+                cmd[input_idx:input_idx] = hwaccel_args
 
             if vf_filters:
                 cmd.extend(["-vf", ",".join(vf_filters)])
@@ -1102,6 +1112,7 @@ class CompressionThread(QThread):
             AIProcessor, UPSCALE_MODELS, INTERPOLATION_MODELS, COLORIZE_MODELS,
             extract_frames, encode_from_frames, extract_audio,
             get_video_fps, count_frames, cleanup_temp, mux_audio,
+            verify_realesrgan_binary, verify_rife_binary, ensure_deoldify_model,
         )
 
         file_path = Path(file_path)
@@ -1115,60 +1126,86 @@ class CompressionThread(QThread):
         audio_path = temp_base / "audio.m4a"
         intermediate_video = temp_base / f"{file_path.stem}_intermediate.mp4"
 
-        # Get user-defined order (default: colorize -> upscale -> interpolate)
+        # Determine which steps are active and their order
         ai_order = self.ai_config.get("ai_order", ["colorize", "upscale", "interpolate"])
+        active_steps = [s for s in ai_order if self._is_ai_step_enabled(s)]
+
+        if not active_steps:
+            return file_path
+
+        # Progress is split evenly across: extract frames + each active step + encode/mux
+        total_substeps = 1 + len(active_steps) + 1
+
+        def _report_substep_progress(substep_index, pct_in_step):
+            """Map a 0-100 progress inside a substep to the overall AI progress."""
+            overall = int(((substep_index + pct_in_step / 100.0) / total_substeps) * 100)
+            self.update_progress.emit(overall)
 
         try:
             # 1. Extract frames
             self.update_log.emit("[AI] Extracting frames...")
+            _report_substep_progress(0, 0)
             extract_frames(file_path, frames_dir)
+            _report_substep_progress(0, 100)
 
             original_fps = get_video_fps(file_path)
             current_frames_dir = frames_dir
             current_fps = original_fps
 
             # 2. Run AI steps in user-defined order
-            for step in ai_order:
+            for step_index, step in enumerate(active_steps, start=1):
                 if not g.compressing:
-                    break
+                    raise RuntimeError("AI processing aborted by user.")
 
-                if step == "colorize" and self.ai_config.get("colorize_enabled"):
+                if step == "colorize":
                     render_factor = self.ai_config.get("colorize_render_factor", 256)
                     colorize_model = self.ai_config.get("colorize_model", "deoldify-artistic")
-                    colorize_device = self.ai_config.get("colorize_device")  # None=auto, -1=cpu, 0,1,2=gpu
+                    colorize_device = self.ai_config.get("colorize_device")
+
                     self.update_log.emit(f"[AI] Colorizing: {colorize_model} (render_factor={render_factor})")
+                    if not ensure_deoldify_model(colorize_model, log_callback=self.update_log.emit):
+                        raise RuntimeError(f"DeOldify model {colorize_model} is not available and could not be downloaded.")
 
                     from src.ai_tools import DeOldifyProcessor
-                    processor = DeOldifyProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor = DeOldifyProcessor(self.update_log.emit, lambda pct: _report_substep_progress(step_index, pct))
+                    self._current_ai_processor = processor
                     processor.colorize_frames(current_frames_dir, colorized_dir, render_factor, model_key=colorize_model, device=colorize_device)
                     current_frames_dir = colorized_dir
 
-                elif step == "upscale" and "Upscale" in self.ai_config.get("mode", ""):
+                elif step == "upscale":
                     model_key = self.ai_config.get("upscale_model", "realesrgan-x4plus")
                     scale = self.ai_config.get("upscale_scale", 4)
-                    upscale_device = self.ai_config.get("upscale_device")  # None=auto, -1=cpu, 0,1,2=gpu
+                    upscale_device = self.ai_config.get("upscale_device")
 
                     model_info = UPSCALE_MODELS.get(model_key, {})
                     self.update_log.emit(f"[AI] Upscaling: {model_info.get('name', model_key)} x{scale}")
+                    if not verify_realesrgan_binary():
+                        raise RuntimeError("Real-ESRGAN binary not found. Please restart to download it.")
 
-                    processor = AIProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor = AIProcessor(self.update_log.emit, lambda pct: _report_substep_progress(step_index, pct))
+                    self._current_ai_processor = processor
                     processor.upscale_frames(current_frames_dir, upscaled_dir, model_key, scale, gpu_id=upscale_device)
                     current_frames_dir = upscaled_dir
 
-                elif step == "interpolate" and "Interpolation" in self.ai_config.get("mode", ""):
+                elif step == "interpolate":
                     model_key = self.ai_config.get("interp_model", "rife-v4")
                     multiplier = self.ai_config.get("interp_multiplier", 2)
-                    interp_device = self.ai_config.get("interp_device")  # None=auto, -1=cpu, 0,1,2=gpu
+                    interp_device = self.ai_config.get("interp_device")
 
                     model_info = INTERPOLATION_MODELS.get(model_key, {})
                     self.update_log.emit(f"[AI] Interpolating: {model_info.get('name', model_key)} x{multiplier}")
+                    if not verify_rife_binary():
+                        raise RuntimeError("RIFE binary not found. Please restart to download it.")
 
-                    processor = AIProcessor(self.update_log.emit, self.update_progress.emit)
+                    processor = AIProcessor(self.update_log.emit, lambda pct: _report_substep_progress(step_index, pct))
+                    self._current_ai_processor = processor
                     processor.interpolate_frames(current_frames_dir, interpolated_dir, model_key, multiplier, gpu_id=interp_device)
                     current_frames_dir = interpolated_dir
                     current_fps = original_fps * multiplier
 
-            # 5. Extract audio
+                self._current_ai_processor = None
+
+            # 3. Extract audio
             from src.ai_tools import has_audio_stream
             has_audio = has_audio_stream(file_path)
             if has_audio:
@@ -1177,11 +1214,14 @@ class CompressionThread(QThread):
             else:
                 self.update_log.emit("[AI] No audio track found, skipping audio extraction.")
 
-            # 6. Encode intermediate video from processed frames
+            # 4. Encode intermediate video from processed frames
             self.update_log.emit("[AI] Encoding processed video...")
+            encode_substep = total_substeps - 1
+            _report_substep_progress(encode_substep, 0)
             encode_from_frames(current_frames_dir, intermediate_video, current_fps)
+            _report_substep_progress(encode_substep, 100)
 
-            # 7. Mux audio back (if we have audio)
+            # 5. Mux audio back (if we have audio)
             if has_audio:
                 final_output = temp_base / "final_with_audio.mp4"
                 mux_audio(intermediate_video, audio_path, final_output)
@@ -1194,6 +1234,12 @@ class CompressionThread(QThread):
         except Exception as e:
             self.error_msg.emit(f"AI processing failed: {str(e)[:200]}")
             raise
+
+    def _is_ai_step_enabled(self, step_name):
+        """Return True if the given AI step is enabled in the current config."""
+        if not self.ai_config:
+            return False
+        return bool(self.ai_config.get(f"{step_name}_enabled"))
 
     def run(self):
         g.completed = []
@@ -1258,16 +1304,21 @@ class CompressionThread(QThread):
             if ai_parts:
                 self.ai_config = {"mode": " + ".join(ai_parts)}
                 self.ai_config["ai_order"] = task.get("ai_order", ["colorize", "upscale", "interpolate"])
-                if pipeline.get("colorize", {}).get("enabled"):
-                    self.ai_config["colorize_enabled"] = True
+                self.ai_config["upscale_enabled"] = pipeline.get("upscale", {}).get("enabled", False)
+                self.ai_config["interpolate_enabled"] = pipeline.get("interpolate", {}).get("enabled", False)
+                self.ai_config["colorize_enabled"] = pipeline.get("colorize", {}).get("enabled", False)
+                if self.ai_config["colorize_enabled"]:
                     self.ai_config["colorize_model"] = pipeline["colorize"].get("model", "deoldify-artistic")
                     self.ai_config["colorize_render_factor"] = pipeline["colorize"].get("render_factor", 256)
-                if pipeline.get("upscale", {}).get("enabled"):
+                    self.ai_config["colorize_device"] = pipeline["colorize"].get("device")
+                if self.ai_config["upscale_enabled"]:
                     self.ai_config["upscale_model"] = pipeline["upscale"].get("model", "realesrgan-x4plus")
                     self.ai_config["upscale_scale"] = pipeline["upscale"].get("scale", 2)
-                if pipeline.get("interpolate", {}).get("enabled"):
+                    self.ai_config["upscale_device"] = pipeline["upscale"].get("device")
+                if self.ai_config["interpolate_enabled"]:
                     self.ai_config["interp_model"] = pipeline["interpolate"].get("model", "rife-v4.6")
                     self.ai_config["interp_multiplier"] = pipeline["interpolate"].get("multiplier", 2)
+                    self.ai_config["interp_device"] = pipeline["interpolate"].get("device")
 
             # Set output dir
             task_output_dir = task.get("output_dir", "")
@@ -1284,7 +1335,7 @@ class CompressionThread(QThread):
                 else:
                     processed_path = self.run_ai_processing(file_path)
                     self.run_pass(processed_path)
-                    self._cleanup_ai_temp()
+                    self._cleanup_ai_temp(file_path)
                 g.completed.append(file_path)
 
         msg = f"Completed {len(g.completed)} file(s)!" if g.compressing else "Aborted!"
@@ -1300,15 +1351,27 @@ class CompressionThread(QThread):
             else:
                 processed_path = self.run_ai_processing(file_path)
                 self.run_pass(processed_path)
-                self._cleanup_ai_temp()
+                self._cleanup_ai_temp(file_path)
             g.completed.append(file_path)
         msg = f"Compressed {len(g.completed)} video(s)!" if g.compressing else "Aborted!"
         self.update_log.emit(msg)
 
-    def _cleanup_ai_temp(self):
-        """Remove AI temporary directory."""
+    def abort_ai(self):
+        """Abort any active AI processor."""
+        processor = getattr(self, "_current_ai_processor", None)
+        if processor is not None:
+            try:
+                processor.abort()
+            except Exception as e:
+                print(f"Error aborting AI processor: {e}")
+        self._current_ai_processor = None
+
+    def _cleanup_ai_temp(self, file_path=None):
+        """Remove AI temporary directory for a specific job or the whole base."""
         import shutil
         temp_base = Path(g.output_dir) / ".ai_temp"
+        if file_path is not None:
+            temp_base = temp_base / Path(file_path).stem
         if temp_base.exists():
             try:
                 shutil.rmtree(temp_base, ignore_errors=True)

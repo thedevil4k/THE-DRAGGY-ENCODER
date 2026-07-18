@@ -60,7 +60,17 @@ pip install -r requirements.txt
 
 # Run the app
 python main.py
+# or use the cross-platform launcher
+python launch.py
 ```
+
+### Quick Launch (no WSL required)
+
+| OS | File | How to run |
+|---|---|---|
+| **Windows** | `run_draggy.bat` | Double-click or run from CMD/PowerShell |
+| **Windows** | `run_draggy.ps1` | `powershell -ExecutionPolicy Bypass -File .\run_draggy.ps1` |
+| **Linux / macOS** | `run_draggy.sh` | `chmod +x run_draggy.sh && ./run_draggy.sh` |
 
 ### Packaging
 

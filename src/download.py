@@ -5,6 +5,9 @@ import shutil
 import src.globals as g
 import zipfile
 import tarfile
+import hashlib
+import time
+from pathlib import Path
 from PySide6.QtCore import QThread, Signal
 
 # BtbN/FFmpeg-Builds latest requires NVENC API 13.1 (driver 610+).
@@ -21,46 +24,123 @@ RIFE_DL_WINDOWS = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/2
 RIFE_DL_LINUX = "https://github.com/nihui/rife-ncnn-vulkan/releases/download/20221029/rife-ncnn-vulkan-20221029-linux.zip"
 
 
-def _download_file(url, dest_path, progress_callback=None, log_callback=None, label="Downloading"):
-    """Generic file downloader with progress reporting."""
+def _verify_file(filepath, expected_size=None, expected_sha256=None):
+    """Verify that a file exists and optionally matches expected size/sha256."""
+    if not os.path.exists(filepath):
+        return False
+    if expected_size is not None and os.path.getsize(filepath) != expected_size:
+        return False
+    if expected_sha256 is not None:
+        sha256_hash = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for byte_block in iter(lambda: f.read(65536), b""):
+                sha256_hash.update(byte_block)
+        if sha256_hash.hexdigest().lower() != expected_sha256.lower():
+            return False
+    return True
+
+
+def _download_file(
+    url,
+    dest_path,
+    progress_callback=None,
+    log_callback=None,
+    label="Downloading",
+    expected_size=None,
+    expected_sha256=None,
+    retries=3,
+):
+    """Robust file downloader with retries, atomic writes and integrity checks.
+
+    Args:
+        url: URL to download.
+        dest_path: Final destination path.
+        progress_callback: Function(int_pct) called with 0-100.
+        log_callback: Function(str) called with status messages.
+        label: Human-readable label for logs.
+        expected_size: Optional expected file size in bytes.
+        expected_sha256: Optional expected SHA256 hex digest.
+        retries: Number of retry attempts (default 3).
+
+    Returns:
+        True if the file was downloaded or already valid, False otherwise.
+    """
+    dest_path = str(dest_path)
+    if _verify_file(dest_path, expected_size, expected_sha256):
+        if log_callback:
+            log_callback(f"{label} already downloaded.")
+        if progress_callback:
+            progress_callback(100)
+        return True
+
     if log_callback:
         log_callback(f"{label}...")
     print(f"{label}: {url}")
 
-    try:
-        response = requests.get(url, stream=True, timeout=(15, None))
-        response.raise_for_status()
-        total_size = response.headers.get("content-length")
+    part_path = dest_path + ".part"
+    headers = {"User-Agent": "DraggyEncoder/1.0"}
 
-        with open(dest_path, "wb") as f:
+    for attempt in range(retries):
+        try:
+            response = requests.get(url, stream=True, timeout=(15, 60), headers=headers)
+            response.raise_for_status()
+            total_size = response.headers.get("content-length")
+
             if total_size is None:
-                f.write(response.content)
-                if log_callback:
-                    log_callback(f"{label} complete")
-                return True
-
-            total_size = int(total_size)
-            downloaded = 0
-            for chunk in response.iter_content(chunk_size=4096):
-                if not chunk:
-                    continue
-                downloaded += len(chunk)
-                f.write(chunk)
-                percentage = (downloaded / total_size) * 100
-                downloaded_mb = downloaded / (1024 * 1024)
-                total_mb = total_size / (1024 * 1024)
-                message = f"{label}...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB"
-                if log_callback:
-                    log_callback(message)
+                # Unknown size: stream to disk without progress percentages.
+                with open(part_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
                 if progress_callback:
-                    progress_callback(int(percentage))
-        return True
-    except Exception as e:
-        error_msg = f"{label} error: {e}"
-        if log_callback:
-            log_callback(error_msg)
-        print(error_msg)
-        return False
+                    progress_callback(100)
+            else:
+                total_size = int(total_size)
+                downloaded = 0
+                with open(part_path, "wb") as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if not chunk:
+                            continue
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        percentage = (downloaded / total_size) * 100
+                        downloaded_mb = downloaded / (1024 * 1024)
+                        total_mb = total_size / (1024 * 1024)
+                        message = f"{label}...\n{downloaded_mb:.1f} MB / {total_mb:.1f} MB"
+                        if log_callback:
+                            log_callback(message)
+                        if progress_callback:
+                            progress_callback(int(percentage))
+
+            # Verify integrity before committing the file.
+            if not _verify_file(part_path, expected_size or total_size, expected_sha256):
+                raise ValueError("Downloaded file failed integrity check.")
+
+            # Atomic commit.
+            os.replace(part_path, dest_path)
+
+            if log_callback:
+                log_callback(f"{label} complete")
+            return True
+
+        except Exception as e:
+            error_msg = f"{label} error (attempt {attempt + 1}/{retries}): {e}"
+            if log_callback:
+                log_callback(error_msg)
+            print(error_msg)
+
+            # Clean up partial download before the next retry.
+            if os.path.exists(part_path):
+                try:
+                    os.remove(part_path)
+                except Exception:
+                    pass
+
+            if attempt < retries - 1:
+                backoff = min(2 ** attempt, 30)
+                time.sleep(backoff)
+
+    return False
 
 
 def download_ffmpeg_func(progress_callback=None, log_callback=None):
@@ -365,10 +445,6 @@ def download_deoldify_model(progress_callback=None, log_callback=None, model_key
     all_ok = True
     for key, model_info in models_to_download.items():
         file_path = os.path.join(models_dir, model_info["model_filename"])
-        if os.path.exists(file_path):
-            if log_callback:
-                log_callback(f"{model_info['name']} already downloaded.")
-            continue
 
         ok = _download_file(
             model_info["model_url"],
@@ -376,6 +452,8 @@ def download_deoldify_model(progress_callback=None, log_callback=None, model_key
             progress_callback,
             log_callback,
             label=f"Downloading {model_info['name']}",
+            expected_size=model_info.get("expected_size"),
+            expected_sha256=model_info.get("expected_sha256"),
         )
         if ok:
             if log_callback:

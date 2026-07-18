@@ -58,6 +58,9 @@ class DeOldifyONNX:
         # Resize to render_factor
         rgb_resized = cv2.resize(rgb_input, (render_factor, render_factor))
 
+        # Normalize to [0, 1] (models expect normalized RGB, not 0-255)
+        rgb_resized = rgb_resized.astype(np.float32) / 255.0
+
         # Determine input dtype from model
         input_meta = self.session.get_inputs()[0]
         if "float16" in input_meta.type:
@@ -77,9 +80,9 @@ class DeOldifyONNX:
         else:
             colorized = output
 
-        # Convert to uint8
+        # Convert to uint8 (model outputs are typically normalized [0, 1])
         if colorized.dtype in (np.float16, np.float32):
-            colorized = np.clip(colorized, 0, 255).astype(np.uint8)
+            colorized = np.clip(colorized * 255.0, 0, 255).astype(np.uint8)
 
         # Ensure RGB -> BGR for OpenCV
         if colorized.shape[2] == 3:

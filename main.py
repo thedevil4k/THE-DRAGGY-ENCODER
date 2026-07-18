@@ -2737,18 +2737,21 @@ class Window(QWidget):
         config = {"mode": " + ".join(mode_label.get(s, s) for s in active)}
         config["ai_order"] = list(active)
 
-        if steps["colorize"].is_enabled():
-            config["colorize_enabled"] = True
+        config["upscale_enabled"] = steps["upscale"].is_enabled()
+        config["interpolate_enabled"] = steps["interpolate"].is_enabled()
+        config["colorize_enabled"] = steps["colorize"].is_enabled()
+
+        if config["colorize_enabled"]:
             config["colorize_model"] = self.page_colorize.combo_model.currentData() or "deoldify-artistic"
             config["colorize_render_factor"] = 256
             config["colorize_device"] = _parse_ai_device(self.page_colorize.combo_device.currentText())
 
-        if steps["upscale"].is_enabled():
+        if config["upscale_enabled"]:
             config["upscale_model"] = self.page_upscale.combo_model.currentData() or "realesrgan-x4plus"
             config["upscale_scale"] = int(self.page_upscale.combo_scale.currentText().replace("x", ""))
             config["upscale_device"] = _parse_ai_device(self.page_upscale.combo_device.currentText())
 
-        if steps["interpolate"].is_enabled():
+        if config["interpolate_enabled"]:
             config["interp_model"] = self.page_interpolate.combo_model.currentData() or "rife-v4.6"
             config["interp_multiplier"] = int(self.page_interpolate.combo_mult.currentText().replace("x", ""))
             config["interp_device"] = _parse_ai_device(self.page_interpolate.combo_device.currentText())
@@ -2800,13 +2803,22 @@ class Window(QWidget):
             self._on_codec_changed()
 
     def abort_compression(self):
+        g.compressing = False
         kill_ffmpeg()
+        thread = getattr(self, "compress_thread", None)
+        if thread and thread.isRunning():
+            thread.abort_ai()
+            thread.terminate()
+            if not thread.wait(3000):
+                thread.terminate()
         self._on_completed(True)
 
     def _on_completed(self, aborted=False):
         g.compressing = False
-        if self.compress_thread:
-            self.compress_thread.terminate()
+        thread = getattr(self, "compress_thread", None)
+        if thread and thread.isRunning():
+            thread.terminate()
+            thread.wait(3000)
         self._set_ui_enabled(True)
 
         was_error = getattr(self, 'last_error_occured', False)
